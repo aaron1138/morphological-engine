@@ -37,12 +37,12 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Slot, Qt, QSettings
 from PySide6.QtGui import QIntValidator, QDoubleValidator
 
-from config import app_config as config, Config, XYBlendOperation, LutParameters, DEFAULT_NUM_WORKERS, upgrade_config
-import processing_core as core
-import xy_blend_processor
-import lut_manager
-from pyside_xy_blend_tab import XYBlendTab
-from roi_tracker import ROITracker
+from utils.config import app_config as config, Config, XYBlendOperation, LutParameters, DEFAULT_NUM_WORKERS, upgrade_config
+import core.processing_core as core
+import core.xy_blend_processor as xy_blend_processor
+from . import lut_manager
+from .pyside_xy_blend_tab import XYBlendTab
+from .roi_tracker import ROITracker
 
 class ImageProcessorThread(QThread):
     """
