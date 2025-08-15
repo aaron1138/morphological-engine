@@ -215,6 +215,58 @@ def _calculate_receding_gradient_field_roi_fade(current_white_mask, prior_white_
 
     return final_gradient_map
 
+def _calculate_receding_gradient_field_sobel_fade(current_white_mask, prior_white_combined_mask, config, debug_info=None):
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    grad_x = cv2.Sobel(current_white_mask, cv2.CV_16S, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(current_white_mask, cv2.CV_16S, 0, 1, ksize=3)
+    abs_grad_x = cv2.convertScaleAbs(grad_x)
+    abs_grad_y = cv2.convertScaleAbs(grad_y)
+    grad = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+
+    # Discard interior gradients
+    eroded_mask = cv2.erode(current_white_mask, np.ones((3,3), np.uint8), iterations=1)
+    exterior_grad = cv2.bitwise_and(grad, cv2.bitwise_not(eroded_mask))
+
+    final_gradient = cv2.bitwise_and(exterior_grad, exterior_grad, mask=receding_white_areas)
+
+    # Invert and normalize
+    final_gradient = cv2.bitwise_not(final_gradient)
+    cv2.normalize(final_gradient, final_gradient, 0, 255, cv2.NORM_MINMAX)
+
+    return cv2.bitwise_and(final_gradient, final_gradient, mask=receding_white_areas)
+
+def _calculate_receding_gradient_field_scharr_fade(current_white_mask, prior_white_combined_mask, config, debug_info=None):
+    if prior_white_combined_mask is None:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    receding_white_areas = cv2.bitwise_and(prior_white_combined_mask, cv2.bitwise_not(current_white_mask))
+    if cv2.countNonZero(receding_white_areas) == 0:
+        return np.zeros_like(current_white_mask, dtype=np.uint8)
+
+    grad_x = cv2.Scharr(current_white_mask, cv2.CV_16S, 1, 0)
+    grad_y = cv2.Scharr(current_white_mask, cv2.CV_16S, 0, 1)
+    abs_grad_x = cv2.convertScaleAbs(grad_x)
+    abs_grad_y = cv2.convertScaleAbs(grad_y)
+    grad = cv2.addWeighted(abs_grad_x, 0.5, abs_grad_y, 0.5, 0)
+
+    # Discard interior gradients
+    eroded_mask = cv2.erode(current_white_mask, np.ones((3,3), np.uint8), iterations=1)
+    exterior_grad = cv2.bitwise_and(grad, cv2.bitwise_not(eroded_mask))
+
+    final_gradient = cv2.bitwise_and(exterior_grad, exterior_grad, mask=receding_white_areas)
+
+    # Invert and normalize
+    final_gradient = cv2.bitwise_not(final_gradient)
+    cv2.normalize(final_gradient, final_gradient, 0, 255, cv2.NORM_MINMAX)
+
+    return cv2.bitwise_and(final_gradient, final_gradient, mask=receding_white_areas)
+
 def process_z_blending(current_white_mask, prior_white_combined_mask, config, classified_rois, debug_info=None):
     """
     Main entry point for Z-axis blending. Dispatches to the correct blending mode.
@@ -225,6 +277,20 @@ def process_z_blending(current_white_mask, prior_white_combined_mask, config, cl
             prior_white_combined_mask,
             config,
             classified_rois,
+            debug_info
+        )
+    elif config.blending_mode == 'sobel_fade':
+        return _calculate_receding_gradient_field_sobel_fade(
+            current_white_mask,
+            prior_white_combined_mask,
+            config,
+            debug_info
+        )
+    elif config.blending_mode == 'scharr_fade':
+        return _calculate_receding_gradient_field_scharr_fade(
+            current_white_mask,
+            prior_white_combined_mask,
+            config,
             debug_info
         )
     else: # Default to fixed_fade

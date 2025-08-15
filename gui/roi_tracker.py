@@ -1,4 +1,6 @@
 import numpy as np
+import collections
+from utils.config import app_config as config
 
 def calculate_iou(boxA, boxB):
     # Determine the (x, y)-coordinates of the intersection rectangle
@@ -25,7 +27,7 @@ def calculate_iou(boxA, boxB):
 class ROITracker:
     def __init__(self):
         self.next_roi_id = 0
-        self.previous_rois = {}  # Store rois by id
+        self.previous_roi_layers = collections.deque(maxlen=config.receding_layers)
 
     def _classify_new_roi(self, roi, layer_index, config):
         if not config.roi_params.enable_raft_support_handling:
@@ -37,7 +39,7 @@ class ROITracker:
         return "model"
 
     def update_and_classify(self, current_rois_raw, layer_index, config):
-        if not self.previous_rois:
+        if not self.previous_roi_layers:
             # First frame, classify all ROIs as new
             initial_rois = {}
             for roi in current_rois_raw:
@@ -46,28 +48,43 @@ class ROITracker:
                 roi['id'] = new_id
                 roi['classification'] = self._classify_new_roi(roi, layer_index, config)
                 initial_rois[new_id] = roi
-            self.previous_rois = initial_rois
-            return list(self.previous_rois.values())
+            self.previous_roi_layers.append(initial_rois)
+            return list(initial_rois.values())
+
+        # Create a flat list of all previous ROIs from all layers in the window
+        all_previous_rois = {}
+        for layer in self.previous_roi_layers:
+            all_previous_rois.update(layer)
+
+        if not all_previous_rois:
+             # First frame, classify all ROIs as new
+            initial_rois = {}
+            for roi in current_rois_raw:
+                new_id = self.next_roi_id
+                self.next_roi_id += 1
+                roi['id'] = new_id
+                roi['classification'] = self._classify_new_roi(roi, layer_index, config)
+                initial_rois[new_id] = roi
+            self.previous_roi_layers.append(initial_rois)
+            return list(initial_rois.values())
 
         # Match current ROIs with previous ROIs
         current_indices = list(range(len(current_rois_raw)))
-        prev_ids = list(self.previous_rois.keys())
+        prev_ids = list(all_previous_rois.keys())
 
         iou_matrix = np.zeros((len(current_rois_raw), len(prev_ids)))
         for i, current_roi in enumerate(current_rois_raw):
             for j, prev_id in enumerate(prev_ids):
-                iou_matrix[i, j] = calculate_iou(current_roi['bbox'], self.previous_rois[prev_id]['bbox'])
+                iou_matrix[i, j] = calculate_iou(current_roi['bbox'], all_previous_rois[prev_id]['bbox'])
 
         matches = {} # current_idx -> prev_id
         used_prev_ids = set()
 
         # Find best match for each current_roi, sorted by score
-        # Using -1 on axis=None flattens and sorts descending
         sorted_indices = np.unravel_index(np.argsort(-iou_matrix, axis=None), iou_matrix.shape)
 
         for i, j in zip(*sorted_indices):
-            # i = current_roi_idx, j = prev_id_idx
-            if iou_matrix[i,j] < 0.5: # Use a higher threshold for IoA/IoMin
+            if iou_matrix[i,j] < 0.5:
                 break
 
             prev_id_to_match = prev_ids[j]
@@ -80,7 +97,7 @@ class ROITracker:
         # Process matched ROIs
         for current_idx, prev_id in matches.items():
             current_roi = current_rois_raw[current_idx]
-            prev_roi = self.previous_rois[prev_id]
+            prev_roi = all_previous_rois[prev_id]
 
             current_roi['id'] = prev_id
 
@@ -105,5 +122,5 @@ class ROITracker:
                 roi['classification'] = self._classify_new_roi(roi, layer_index, config)
                 new_tracked_rois[new_id] = roi
 
-        self.previous_rois = new_tracked_rois
-        return list(self.previous_rois.values())
+        self.previous_roi_layers.append(new_tracked_rois)
+        return list(new_tracked_rois.values())

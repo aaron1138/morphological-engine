@@ -155,10 +155,13 @@ class Config:
     uvtools_delete_temp_on_completion: bool = True
 
     # --- Stack Blending Settings ---
-    blending_mode: str = "fixed_fade"  # "fixed_fade" or "roi_fade"
+    blending_mode: str = "fixed_fade"  # "fixed_fade", "roi_fade", "sobel_fade", "scharr_fade"
     receding_layers: int = 3
     use_fixed_fade_receding: bool = False
     fixed_fade_distance_receding: float = 10.0
+    voxel_x_um: float = 22.0
+    voxel_y_um: float = 22.0
+    voxel_z_um: float = 30.0
     
     # --- Overhang Settings (for future use) ---
     overhang_layers: int = 0

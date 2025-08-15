@@ -35,8 +35,8 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
-from config import LutParameters
-import lut_manager
+from utils.config import LutParameters
+from utils import lut_manager
 
 class InteractiveMplCanvas(FigureCanvas):
     """

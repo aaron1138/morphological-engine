@@ -21,15 +21,23 @@ import cv2
 import numpy as np
 import os
 from typing import List, Optional
-import lut_manager
-from config import XYBlendOperation, LutParameters
+from utils import lut_manager
+from utils.config import XYBlendOperation, LutParameters
 
-def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
+def apply_gaussian_blur(image: np.ndarray, op: XYBlendOperation, config) -> np.ndarray:
     """Applies Gaussian blur to an 8-bit grayscale image."""
     ksize_x = op.gaussian_ksize_x
     ksize_y = op.gaussian_ksize_y
     sigma_x = op.gaussian_sigma_x
     sigma_y = op.gaussian_sigma_y
+
+    if config.voxel_x_um > 0 and config.voxel_y_um > 0:
+        aspect_ratio = config.voxel_y_um / config.voxel_x_um
+        if aspect_ratio > 1:
+            sigma_y *= aspect_ratio
+        else:
+            sigma_x /= aspect_ratio
+
     return cv2.GaussianBlur(image, (ksize_x, ksize_y), sigmaX=sigma_x, sigmaY=sigma_y)
 
 def apply_bilateral_filter(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
@@ -53,17 +61,17 @@ def apply_unsharp_mask(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     blur_sigma = op.unsharp_blur_sigma
 
     blurred_image = cv2.GaussianBlur(image, (blur_ksize, blur_ksize), sigmaX=blur_sigma, sigmaY=blur_sigma)
-    
+
     # Add the weighted "detail" layer back to the original
     sharpened_image = cv2.addWeighted(image, 1.0 + amount, blurred_image, -amount, 0)
-    
+
     if threshold > 0:
         # Create a mask where the absolute difference between original and sharpened is below the threshold
         diff = cv2.absdiff(image, sharpened_image)
         mask = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY_INV)[1]
         # Where the mask is white (difference is small), use the original image pixels
         return np.where(mask == 255, image, sharpened_image)
-    
+
     return sharpened_image
 
 def apply_resize(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
@@ -78,7 +86,7 @@ def apply_resize(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
         width = int(current_width * (height / current_height))
     elif height is None:
         height = int(current_height * (width / current_width))
-    
+
     if width == current_width and height == current_height: return image
 
     flags = {
@@ -98,7 +106,7 @@ def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
         if lut_params.lut_source == "generated":
             # Pass universal range parameters to all generation functions
             args = (lut_params.input_min, lut_params.input_max, lut_params.output_min, lut_params.output_max)
-            
+
             if lut_params.lut_generation_type == "linear":
                 generated_lut = lut_manager.generate_linear_lut(*args)
             elif lut_params.lut_generation_type == "gamma":
@@ -113,13 +121,13 @@ def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
                 generated_lut = lut_manager.generate_sqrt_lut(lut_params.sqrt_param, *args)
             elif lut_params.lut_generation_type == "rodbard":
                 generated_lut = lut_manager.generate_rodbard_lut(lut_params.rodbard_param, *args)
-        
+
         elif lut_params.lut_source == "file":
             if lut_params.fixed_lut_path and os.path.exists(lut_params.fixed_lut_path):
                 generated_lut = lut_manager.load_lut(lut_params.fixed_lut_path)
             else:
                 print(f"Warning: LUT file not found: '{lut_params.fixed_lut_path}'. Using default pass-through LUT.")
-    
+
     except Exception as e:
         print(f"Error processing LUT for operation '{op.type}': {e}. Using default pass-through LUT.")
 
@@ -130,33 +138,32 @@ def apply_lut_operation(image: np.ndarray, op: XYBlendOperation) -> np.ndarray:
     return lut_manager.apply_z_lut(image, generated_lut)
 
 
-def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation]) -> np.ndarray:
+def process_xy_pipeline(image: np.ndarray, pipeline_ops: List[XYBlendOperation], config) -> np.ndarray:
     """Applies the sequence of operations defined in the pipeline."""
     processed_image = image.copy()
 
     if not pipeline_ops:
         return processed_image
 
-    # Map operation type strings to their corresponding functions for clean dispatch
-    op_map = {
-        "gaussian_blur": apply_gaussian_blur,
-        "bilateral_filter": apply_bilateral_filter,
-        "median_blur": apply_median_blur,
-        "unsharp_mask": apply_unsharp_mask,
-        "resize": apply_resize,
-        "apply_lut": apply_lut_operation,
-    }
-
     for op in pipeline_ops:
-        op_func = op_map.get(op.type)
-        if op_func:
-            processed_image = op_func(processed_image, op)
+        if op.type == "gaussian_blur":
+            processed_image = apply_gaussian_blur(processed_image, op, config)
+        elif op.type == "bilateral_filter":
+            processed_image = apply_bilateral_filter(processed_image, op)
+        elif op.type == "median_blur":
+            processed_image = apply_median_blur(processed_image, op)
+        elif op.type == "unsharp_mask":
+            processed_image = apply_unsharp_mask(processed_image, op)
+        elif op.type == "resize":
+            processed_image = apply_resize(processed_image, op)
+        elif op.type == "apply_lut":
+            processed_image = apply_lut_operation(processed_image, op)
         elif op.type != "none":
             print(f"Warning: Unknown XY blend operation type '{op.type}'. Skipping.")
-        
+
         # It's good practice to ensure the image remains 8-bit after each step,
         # although most OpenCV functions handle this correctly if the input is uint8.
         if processed_image.dtype != np.uint8:
             processed_image = np.clip(processed_image, 0, 255).astype(np.uint8)
-    
+
     return processed_image

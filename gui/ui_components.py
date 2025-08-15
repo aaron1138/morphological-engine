@@ -40,7 +40,7 @@ from PySide6.QtGui import QIntValidator, QDoubleValidator
 from utils.config import app_config as config, Config, XYBlendOperation, LutParameters, DEFAULT_NUM_WORKERS, upgrade_config
 import core.processing_core as core
 import core.xy_blend_processor as xy_blend_processor
-from . import lut_manager
+from utils import lut_manager
 from .pyside_xy_blend_tab import XYBlendTab
 from .roi_tracker import ROITracker
 
@@ -66,11 +66,11 @@ class ImageProcessorThread(QThread):
         Executes UVToolsCmd.exe to extract layers into a timestamped temp folder.
         """
         self.status_update.emit("Starting UVTools slice extraction...")
-        
+
         self.session_temp_folder = os.path.join(self.app_config.uvtools_temp_folder, f"{self.app_config.output_file_prefix}{self.run_timestamp}")
         input_folder = os.path.join(self.session_temp_folder, "Input")
         output_folder = os.path.join(self.session_temp_folder, "Output")
-        
+
         os.makedirs(input_folder, exist_ok=True)
         os.makedirs(output_folder, exist_ok=True)
 
@@ -79,7 +79,7 @@ class ImageProcessorThread(QThread):
             input_folder, "--content", "Layers"
         ]
         self.status_update.emit(f"Running command: {' '.join(command)}")
-        
+
         try:
             creation_flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
             process = subprocess.run(command, capture_output=True, text=True, creationflags=creation_flags)
@@ -94,12 +94,12 @@ class ImageProcessorThread(QThread):
     def _generate_uvtop_file(self, processed_images_folder: str) -> str:
         """Generates the .uvtop XML file for repacking."""
         self.status_update.emit("Generating UVTools operation file...")
-        
+
         numeric_pattern = re.compile(r'(\d+)\.\w+$')
         def get_numeric_part(filename):
             match = numeric_pattern.search(filename)
             return int(match.group(1)) if match else float('inf')
-            
+
         processed_files = sorted(
             [os.path.join(processed_images_folder, f) for f in os.listdir(processed_images_folder) if f.lower().endswith('.png')],
             key=get_numeric_part
@@ -122,10 +122,10 @@ class ImageProcessorThread(QThread):
 
         uvtop_filename = f"repack_operations_{self.run_timestamp}.uvtop"
         uvtop_filepath = os.path.join(self.session_temp_folder, uvtop_filename)
-        
+
         with open(uvtop_filepath, 'w', encoding='utf-8') as f:
             f.write(xml_content)
-            
+
         self.status_update.emit("Operation file generated.")
         return uvtop_filepath
 
@@ -135,7 +135,7 @@ class ImageProcessorThread(QThread):
 
         original_filename = os.path.basename(self.app_config.uvtools_input_file)
         output_filename = f"{self.app_config.output_file_prefix}{self.run_timestamp}_{original_filename}"
-        
+
         # NEW: Determine final output directory based on config
         output_directory = ""
         if self.app_config.uvtools_output_location == "input_folder":
@@ -181,7 +181,7 @@ class ImageProcessorThread(QThread):
 
         debug_info = {'output_folder': output_folder, 'base_filename': os.path.splitext(os.path.basename(filepath))[0]} if debug_save else None
         prior_white_combined_mask = core.find_prior_combined_white_mask(list(prior_binary_masks_snapshot))
-        
+
         receding_gradient = core.process_z_blending(
             current_binary_image,
             prior_white_combined_mask,
@@ -191,7 +191,7 @@ class ImageProcessorThread(QThread):
         )
 
         output_image_from_core = core.merge_to_output(original_image, receding_gradient)
-        final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops)
+        final_processed_image = xy_blend_processor.process_xy_pipeline(output_image_from_core, xy_blend_pipeline_ops, app_config)
 
         output_filename = os.path.basename(filepath)
         output_filepath = os.path.join(output_folder, output_filename)
@@ -205,7 +205,7 @@ class ImageProcessorThread(QThread):
         thread, heavyweight gradient calculation dispatched to worker threads.
         """
         self.status_update.emit("Processing started...")
-        
+
         numeric_pattern = re.compile(r'(\d+)\.\w+$')
         def get_numeric_part(filename):
             match = numeric_pattern.search(filename)
@@ -226,7 +226,7 @@ class ImageProcessorThread(QThread):
                 [f for f in os.listdir(input_path) if f.lower().endswith(('.png', '.bmp', '.tif', '.tiff'))],
                 key=get_numeric_part
             )
-            
+
             image_filenames_filtered = []
             for f in all_image_filenames:
                 numeric_part = get_numeric_part(f)
@@ -243,7 +243,7 @@ class ImageProcessorThread(QThread):
 
             prior_binary_masks_cache = collections.deque(maxlen=self.app_config.receding_layers)
             tracker = ROITracker()
-            
+
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # A list to hold futures so we can check for exceptions
                 active_futures = []
@@ -286,7 +286,7 @@ class ImageProcessorThread(QThread):
                     active_futures.append(future)
 
                     prior_binary_masks_cache.append(binary_image)
-                
+
                 # Wait for all futures to complete and check for errors
                 processed_count = 0
                 for future in concurrent.futures.as_completed(active_futures):
@@ -305,7 +305,7 @@ class ImageProcessorThread(QThread):
                         for f in active_futures:
                             f.cancel()
                         break
-            
+
             self.status_update.emit("All image processing tasks completed.")
 
             # --- UVTools Repack Step ---
@@ -361,7 +361,7 @@ class ImageProcessorApp(QWidget):
         # --- I/O Section ---
         io_group = QGroupBox("I/O")
         io_layout = QVBoxLayout(io_group)
-        
+
         input_mode_layout = QHBoxLayout()
         self.input_mode_group = QButtonGroup(self)
         self.folder_mode_radio = QRadioButton("Folder Input Mode")
@@ -385,7 +385,7 @@ class ImageProcessorApp(QWidget):
         folder_mode_layout.addWidget(self.input_folder_edit, 0, 1)
         self.input_folder_button = QPushButton("Browse...")
         folder_mode_layout.addWidget(self.input_folder_button, 0, 2)
-        
+
         folder_mode_layout.addWidget(QLabel("Output Folder:"), 1, 0)
         self.output_folder_edit = QLineEdit()
         folder_mode_layout.addWidget(self.output_folder_edit, 1, 1)
@@ -395,10 +395,21 @@ class ImageProcessorApp(QWidget):
         folder_mode_layout.addWidget(QLabel("Start Index:"), 2, 0)
         self.start_idx_edit = QLineEdit("0")
         folder_mode_layout.addWidget(self.start_idx_edit, 2, 1)
-        
+
         folder_mode_layout.addWidget(QLabel("Stop Index:"), 3, 0)
         self.stop_idx_edit = QLineEdit()
         folder_mode_layout.addWidget(self.stop_idx_edit, 3, 1)
+
+        folder_mode_layout.addWidget(QLabel("Image Width (px):"), 4, 0)
+        self.image_width_edit = QLineEdit("11520")
+        self.image_width_edit.setValidator(QIntValidator(1, 32768, self))
+        folder_mode_layout.addWidget(self.image_width_edit, 4, 1)
+
+        folder_mode_layout.addWidget(QLabel("Image Height (px):"), 5, 0)
+        self.image_height_edit = QLineEdit("6480")
+        self.image_height_edit.setValidator(QIntValidator(1, 32768, self))
+        folder_mode_layout.addWidget(self.image_height_edit, 5, 1)
+
         self.io_stacked_widget.addWidget(folder_mode_widget)
 
         # --- UVTools Mode Widget ---
@@ -409,19 +420,19 @@ class ImageProcessorApp(QWidget):
         uvtools_mode_layout.addWidget(self.uvtools_path_edit, 0, 1)
         self.uvtools_path_button = QPushButton("Browse...")
         uvtools_mode_layout.addWidget(self.uvtools_path_button, 0, 2)
-        
+
         uvtools_mode_layout.addWidget(QLabel("Working Temp Folder:"), 1, 0)
         self.uvtools_temp_folder_edit = QLineEdit()
         uvtools_mode_layout.addWidget(self.uvtools_temp_folder_edit, 1, 1)
         self.uvtools_temp_folder_button = QPushButton("Browse...")
         uvtools_mode_layout.addWidget(self.uvtools_temp_folder_button, 1, 2)
-        
+
         uvtools_mode_layout.addWidget(QLabel("Input Slice File:"), 2, 0)
         self.uvtools_input_file_edit = QLineEdit()
         uvtools_mode_layout.addWidget(self.uvtools_input_file_edit, 2, 1)
         self.uvtools_input_file_button = QPushButton("Browse...")
         uvtools_mode_layout.addWidget(self.uvtools_input_file_button, 2, 2)
-        
+
         # NEW: Horizontal Rule
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
@@ -442,7 +453,7 @@ class ImageProcessorApp(QWidget):
         uvtools_mode_layout.addWidget(QLabel("Output File Prefix:"), 6, 0)
         self.output_prefix_edit = QLineEdit("Voxel_Blend_Processed_")
         uvtools_mode_layout.addWidget(self.output_prefix_edit, 6, 1, 1, 2)
-        
+
         self.uvtools_cleanup_checkbox = QCheckBox("Delete Temporary Files on Completion")
         self.uvtools_cleanup_checkbox.setChecked(True)
         uvtools_mode_layout.addWidget(self.uvtools_cleanup_checkbox, 7, 1, 1, 2)
@@ -461,10 +472,16 @@ class ImageProcessorApp(QWidget):
         self.blending_mode_group = QButtonGroup(self)
         self.fixed_fade_mode_radio = QRadioButton("Fixed Fade")
         self.roi_fade_mode_radio = QRadioButton("ROI Fade")
+        self.sobel_fade_mode_radio = QRadioButton("Sobel Fade")
+        self.scharr_fade_mode_radio = QRadioButton("Scharr Fade")
         self.blending_mode_group.addButton(self.fixed_fade_mode_radio, 0)
         self.blending_mode_group.addButton(self.roi_fade_mode_radio, 1)
+        self.blending_mode_group.addButton(self.sobel_fade_mode_radio, 2)
+        self.blending_mode_group.addButton(self.scharr_fade_mode_radio, 3)
         blending_mode_layout.addWidget(self.fixed_fade_mode_radio)
         blending_mode_layout.addWidget(self.roi_fade_mode_radio)
+        blending_mode_layout.addWidget(self.sobel_fade_mode_radio)
+        blending_mode_layout.addWidget(self.scharr_fade_mode_radio)
         blending_mode_layout.addStretch(1)
         blending_layout.addLayout(blending_mode_layout)
 
@@ -474,6 +491,22 @@ class ImageProcessorApp(QWidget):
         self.receding_layers_edit = QLineEdit("3")
         self.receding_layers_edit.setValidator(QIntValidator(0, 100, self))
         common_blending_layout.addWidget(self.receding_layers_edit, 0, 1)
+
+        common_blending_layout.addWidget(QLabel("Voxel X (um):"), 1, 0)
+        self.voxel_x_edit = QLineEdit("22.0")
+        self.voxel_x_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
+        common_blending_layout.addWidget(self.voxel_x_edit, 1, 1)
+
+        common_blending_layout.addWidget(QLabel("Voxel Y (um):"), 2, 0)
+        self.voxel_y_edit = QLineEdit("22.0")
+        self.voxel_y_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
+        common_blending_layout.addWidget(self.voxel_y_edit, 2, 1)
+
+        common_blending_layout.addWidget(QLabel("Voxel Z (um):"), 3, 0)
+        self.voxel_z_edit = QLineEdit("30.0")
+        self.voxel_z_edit.setValidator(QDoubleValidator(0.1, 1000.0, 2, self))
+        common_blending_layout.addWidget(self.voxel_z_edit, 3, 1)
+
         common_blending_layout.setColumnStretch(2, 1) # Add stretch
         blending_layout.addLayout(common_blending_layout)
 
@@ -554,25 +587,25 @@ class ImageProcessorApp(QWidget):
         blending_layout.addLayout(overhang_layout)
 
         main_processing_layout.addWidget(blending_group)
-        
+
         # --- General Settings Section ---
         general_group = QGroupBox("General")
         general_layout = QVBoxLayout(general_group)
-        
+
         thread_layout = QHBoxLayout()
         thread_layout.addWidget(QLabel("Thread Count:"))
         self.thread_count_edit = QLineEdit(str(DEFAULT_NUM_WORKERS))
         self.thread_count_edit.setValidator(QIntValidator(1, 128, self))
         self.thread_count_edit.setFixedWidth(60)
         thread_layout.addWidget(self.thread_count_edit)
-        self.ram_estimate_label = QLabel("RAM usage scales with thread count")
+        self.ram_estimate_label = QLabel("Estimated RAM: ~1.0 GB")
         thread_layout.addWidget(self.ram_estimate_label)
         thread_layout.addStretch(1)
         general_layout.addLayout(thread_layout)
 
         self.debug_checkbox = QCheckBox("Save Intermediate Debug Images")
         general_layout.addWidget(self.debug_checkbox)
-        
+
         config_buttons_layout = QHBoxLayout()
         self.save_config_button = QPushButton("Save Config...")
         config_buttons_layout.addWidget(self.save_config_button)
@@ -580,7 +613,7 @@ class ImageProcessorApp(QWidget):
         config_buttons_layout.addWidget(self.load_config_button)
         config_buttons_layout.addStretch(1)
         general_layout.addLayout(config_buttons_layout)
-        
+
         main_processing_layout.addWidget(general_group)
         main_processing_layout.addStretch(1)
 
@@ -609,6 +642,30 @@ class ImageProcessorApp(QWidget):
         self.load_config_button.clicked.connect(self._load_config_from_file)
         self.start_stop_button.clicked.connect(self.toggle_processing)
 
+        self.thread_count_edit.editingFinished.connect(self._update_ram_estimate)
+        self.receding_layers_edit.editingFinished.connect(self._update_ram_estimate)
+        self.image_width_edit.editingFinished.connect(self._update_ram_estimate)
+        self.image_height_edit.editingFinished.connect(self._update_ram_estimate)
+
+    def _update_ram_estimate(self):
+        """Estimates RAM usage based on current settings and updates the UI label."""
+        try:
+            threads = int(self.thread_count_edit.text())
+            receding_layers = int(self.receding_layers_edit.text())
+            width = int(self.image_width_edit.text())
+            height = int(self.image_height_edit.text())
+
+            # Heuristic: 4 bytes/pixel (float32), ~4 buffers per thread (original, binary, gradient, mask)
+            bytes_per_pixel = 4
+            num_buffers = receding_layers + 3
+
+            total_bytes = width * height * bytes_per_pixel * num_buffers * threads
+            ram_gb = total_bytes / (1024**3)
+
+            self.ram_estimate_label.setText(f"Estimated RAM: ~{ram_gb:.2f} GB")
+        except ValueError:
+            self.ram_estimate_label.setText("Estimated RAM: Invalid input")
+
     def _autodetect_uvtools(self):
         """Checks for UVTools in the default location and populates the path if found."""
         default_path = "C:\\Program Files\\UVTools\\UVToolsCmd.exe"
@@ -634,7 +691,7 @@ class ImageProcessorApp(QWidget):
         """Loads settings from the global config object into the UI."""
         self.resize(self.settings.value("window_size", self.size()))
         self.move(self.settings.value("window_position", self.pos()))
-        
+
         self.folder_mode_radio.setChecked(config.input_mode == "folder")
         self.uvtools_mode_radio.setChecked(config.input_mode == "uvtools")
         self.io_stacked_widget.setCurrentIndex(1 if config.input_mode == "uvtools" else 0)
@@ -650,11 +707,16 @@ class ImageProcessorApp(QWidget):
         self.uvtools_output_working_radio.setChecked(config.uvtools_output_location == "working_folder")
         self.uvtools_output_input_radio.setChecked(config.uvtools_output_location == "input_folder")
         self.receding_layers_edit.setText(str(config.receding_layers))
+        self.voxel_x_edit.setText(str(config.voxel_x_um))
+        self.voxel_y_edit.setText(str(config.voxel_y_um))
+        self.voxel_z_edit.setText(str(config.voxel_z_um))
         self.fixed_fade_receding_checkbox.setChecked(config.use_fixed_fade_receding)
         self.fade_dist_receding_edit.setText(str(config.fixed_fade_distance_receding))
 
         self.fixed_fade_mode_radio.setChecked(config.blending_mode == "fixed_fade")
         self.roi_fade_mode_radio.setChecked(config.blending_mode == "roi_fade")
+        self.sobel_fade_mode_radio.setChecked(config.blending_mode == "sobel_fade")
+        self.scharr_fade_mode_radio.setChecked(config.blending_mode == "scharr_fade")
         self.blending_stacked_widget.setCurrentIndex(1 if config.blending_mode == "roi_fade" else 0)
         self.roi_min_size_edit.setText(str(config.roi_params.min_size))
         self.raft_support_group.setChecked(config.roi_params.enable_raft_support_handling)
@@ -669,8 +731,9 @@ class ImageProcessorApp(QWidget):
         self.fade_dist_overhang_edit.setText(str(config.fixed_fade_distance_overhang))
         self.thread_count_edit.setText(str(config.thread_count))
         self.debug_checkbox.setChecked(config.debug_save)
-        
+
         self.xy_blend_tab.apply_settings(config)
+        self._update_ram_estimate()
 
     def save_settings(self):
         """Saves current UI settings to the global config object and QSettings."""
@@ -689,7 +752,14 @@ class ImageProcessorApp(QWidget):
         config.uvtools_delete_temp_on_completion = self.uvtools_cleanup_checkbox.isChecked()
         config.uvtools_output_location = "input_folder" if self.uvtools_output_input_radio.isChecked() else "working_folder"
 
-        config.blending_mode = "roi_fade" if self.roi_fade_mode_radio.isChecked() else "fixed_fade"
+        if self.roi_fade_mode_radio.isChecked():
+            config.blending_mode = "roi_fade"
+        elif self.sobel_fade_mode_radio.isChecked():
+            config.blending_mode = "sobel_fade"
+        elif self.scharr_fade_mode_radio.isChecked():
+            config.blending_mode = "scharr_fade"
+        else:
+            config.blending_mode = "fixed_fade"
         try:
             config.roi_params.min_size = int(self.roi_min_size_edit.text())
         except ValueError:
@@ -722,14 +792,22 @@ class ImageProcessorApp(QWidget):
         config.use_fixed_fade_receding = self.fixed_fade_receding_checkbox.isChecked()
         try: config.fixed_fade_distance_receding = float(self.fade_dist_receding_edit.text().replace(',', '.'))
         except ValueError: config.fixed_fade_distance_receding = 10.0
+        try:
+            config.voxel_x_um = float(self.voxel_x_edit.text().replace(',', '.'))
+            config.voxel_y_um = float(self.voxel_y_edit.text().replace(',', '.'))
+            config.voxel_z_um = float(self.voxel_z_edit.text().replace(',', '.'))
+        except ValueError:
+            config.voxel_x_um = 22.0
+            config.voxel_y_um = 22.0
+            config.voxel_z_um = 30.0
         try: config.thread_count = int(self.thread_count_edit.text())
         except ValueError: config.thread_count = DEFAULT_NUM_WORKERS
         config.debug_save = self.debug_checkbox.isChecked()
-        
+
         config.save("app_config.json")
 
     def _save_config_to_file(self):
-        self.save_settings() 
+        self.save_settings()
         filepath, _ = QFileDialog.getSaveFileName(self, "Save Configuration", "custom_config.json", "JSON Files (*.json)")
         if filepath:
             try:
@@ -746,7 +824,7 @@ class ImageProcessorApp(QWidget):
                 upgrade_config(loaded_config)
                 config.__dict__.clear()
                 config.__dict__.update(loaded_config.__dict__)
-                self.load_settings() 
+                self.load_settings()
                 self.show_info_message("Success", "Configuration loaded.")
             except Exception as e:
                 self.show_error_message("Load Error", f"Failed to load configuration:\n{e}")
@@ -770,7 +848,7 @@ class ImageProcessorApp(QWidget):
         """Validates inputs and starts the processing thread."""
         try:
             self.save_settings()
-            
+
             if config.input_mode == "folder":
                 if not config.input_folder or not os.path.isdir(config.input_folder):
                     raise ValueError("Input folder must be a valid, existing directory.")
@@ -783,7 +861,7 @@ class ImageProcessorApp(QWidget):
                     raise ValueError("Working Temp Folder must be a valid, existing directory.")
                 if not config.uvtools_input_file or not os.path.exists(config.uvtools_input_file):
                     raise ValueError("Input Slice File is not valid.")
-            
+
             self.set_ui_enabled(False)
             self.processor_thread = ImageProcessorThread(app_config=config, max_workers=config.thread_count)
             self.processor_thread.status_update.connect(self.update_status)
@@ -835,7 +913,7 @@ class ImageProcessorApp(QWidget):
     def set_ui_enabled(self, enabled):
         """Toggles the enabled state of all UI widgets."""
         self.tab_widget.setEnabled(enabled)
-        self.start_stop_button.setEnabled(True) 
+        self.start_stop_button.setEnabled(True)
         if not enabled:
             self.start_stop_button.setText("Stop Processing")
         else:

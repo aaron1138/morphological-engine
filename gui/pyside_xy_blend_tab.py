@@ -33,7 +33,7 @@ from PySide6.QtGui import QIntValidator, QDoubleValidator
 from typing import Optional
 
 from utils.config import app_config as config, Config, XYBlendOperation, LutParameters
-from . import lut_manager
+from utils import lut_manager
 from .lut_editor_widget import LutEditorWidget
 
 class XYBlendTab(QWidget):
