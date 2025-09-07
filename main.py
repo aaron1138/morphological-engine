@@ -20,6 +20,8 @@ from PyQt6.QtGui import QAction, QIcon
 
 # --- Core Engine Imports ---
 from core.slice_loader import SliceLoader
+from core.gpu_processor import GPUProcessor
+import moderngl
 
 # --- GUI Widget Imports ---
 from gui.parameter_panel import ParameterPanel
@@ -38,7 +40,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("mSLA Morphological Engine")
         self.setGeometry(100, 100, 1280, 720)
-        
+
         self.slice_loader: SliceLoader | None = None
         self.processing_thread: ProcessingThread | None = None
 
@@ -67,6 +69,13 @@ class MainWindow(QMainWindow):
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
         file_menu = menu_bar.addMenu("&File")
+
+        # --- Add a new Tools Menu for our test ---
+        tools_menu = menu_bar.addMenu("&Tools")
+        gpu_test_action = QAction("Run GPU Test...", self)
+        gpu_test_action.triggered.connect(self.run_gpu_test)
+        tools_menu.addAction(gpu_test_action)
+
         open_action = QAction("&Open Slice Directory...", self)
         open_action.triggered.connect(self.open_directory)
         file_menu.addAction(open_action)
@@ -106,7 +115,7 @@ class MainWindow(QMainWindow):
         output_frame = QFrame()
         output_frame.setFrameShape(QFrame.Shape.StyledPanel)
         output_layout = QVBoxLayout(output_frame)
-        
+
         title_label = QLabel("Output Settings")
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         output_layout.addWidget(title_label)
@@ -138,7 +147,7 @@ class MainWindow(QMainWindow):
     def _create_slice_viewer_panel(self):
         self.slice_viewer = SliceViewer()
         self.right_panel_layout.addWidget(self.slice_viewer)
-        
+
     def open_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Open Slice Directory", ".")
         if not dir_path: return
@@ -212,12 +221,12 @@ class MainWindow(QMainWindow):
         self.set_ui_enabled(False)
         self.progress_bar.setValue(0)
         self.progress_bar.show()
-        
+
         save_debug = self.debug_checkbox.isChecked()
-        
+
         self.processing_thread = ProcessingThread(
-            slice_loader=self.slice_loader, 
-            config=config, 
+            slice_loader=self.slice_loader,
+            config=config,
             output_path=output_path,
             save_debug=save_debug
         )
@@ -246,6 +255,53 @@ class MainWindow(QMainWindow):
     def set_ui_enabled(self, enabled: bool):
         self.left_panel_widget.setEnabled(enabled)
         self.menuBar().setEnabled(enabled)
+
+    def run_gpu_test(self):
+        """Runs a self-contained test of the GPU processing module."""
+        try:
+            gpu = GPUProcessor()
+            if not gpu.ctx:
+                QMessageBox.critical(self, "GPU Test Error", "Failed to create ModernGL context.")
+                return
+
+            vertex_shader = '''
+                #version 330
+                in vec2 in_vert;
+                void main() { gl_Position = vec4(in_vert, 0.0, 1.0); }
+            '''
+            fragment_shader = '''
+                #version 330
+                out vec4 f_color;
+                void main() { f_color = vec4(0.2, 0.4, 0.7, 1.0); }
+            '''
+
+            program = gpu.create_shader(vertex_shader, fragment_shader)
+            if not program:
+                QMessageBox.critical(self, "GPU Test Error", "Failed to compile shader program.")
+                gpu.release()
+                return
+
+            vertices = np.array([-1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0], dtype='f4')
+            vbo = gpu.ctx.buffer(vertices.tobytes())
+            vao_content = [(vbo, '2f', 'in_vert')]
+            vao = gpu.ctx.vertex_array(program, vao_content)
+
+            fbo, texture = gpu.create_offscreen_buffer((512, 512))
+
+            gpu.render(fbo, vao, mode=moderngl.TRIANGLE_STRIP)
+
+            output_image = gpu.read_output(fbo)
+
+            gpu.release()
+
+            QMessageBox.information(self, "GPU Test Success",
+                f"GPU test completed successfully.\nOutput image shape: {output_image.shape}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "GPU Test Error", f"An unexpected error occurred:\n{e}")
+            # Ensure context is released if it exists
+            if 'gpu' in locals() and gpu.ctx:
+                gpu.release()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
