@@ -1,0 +1,7 @@
+# See SETUP.md for instructions on building and installing OpenVDB / NanoVDB.
+moderngl
+numpy
+Pillow
+numba
+PyOpenGL
+PySide6
