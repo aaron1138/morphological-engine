@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+.env
+
+# Build artifacts
+build/
+dist/
+*.egg
+*.whl
+
+# IDE / Editor specific
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Generated files
+app_config.json
+run_log.json
+temp_run_log.json
+temp_voxel_engine_test_dir/
+/Voxel-Stack-Blender - Copy/
+*.log

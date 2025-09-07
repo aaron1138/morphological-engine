@@ -1,0 +1,21 @@
+#version 430 core
+
+// This is a placeholder compute shader.
+// It doesn't do anything useful yet.
+
+// Define the size of the work group.
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 8) in;
+
+// Input and output buffers/textures would be defined here.
+// layout(binding = 0, rgba32f) uniform image3D output_texture;
+// layout(binding = 1) buffer readonly NanoVDBBuffer {
+//     uint data[];
+// } nanovdb_buffer;
+
+void main() {
+    // Get the global invocation ID
+    // ivec3 gid = ivec3(gl_GlobalInvocationID);
+
+    // In a real shader, we would use gid to access voxel data,
+    // process it, and write to an output buffer or texture.
+}

@@ -1,0 +1,7 @@
+PySide6
+ModernGL
+numba
+pytest
+numpy
+opencv-python
+pyopengl
