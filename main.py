@@ -25,9 +25,11 @@ from core.slice_loader import SliceLoader
 from gui.parameter_panel import ParameterPanel
 from gui.slice_viewer import SliceViewer
 from gui.processing_thread import ProcessingThread
+from gui.settings_dialog import GpuSettingsDialog
 
 # --- Utility Imports ---
 from utils import config_manager
+from utils.app_settings import AppSettings
 
 class MainWindow(QMainWindow):
     """
@@ -36,9 +38,12 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("mSLA Morphological Engine")
+        self.setWindowTitle("mSLA Morphological Engine (GPU)")
         self.setGeometry(100, 100, 1280, 720)
-        
+
+        # Initialize the application settings manager
+        self.app_settings = AppSettings()
+
         self.slice_loader: SliceLoader | None = None
         self.processing_thread: ProcessingThread | None = None
 
@@ -82,6 +87,17 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        # --- Settings Menu ---
+        settings_menu = menu_bar.addMenu("&Settings")
+        gpu_config_action = QAction("Configure GPU...", self)
+        gpu_config_action.triggered.connect(self._open_gpu_settings)
+        settings_menu.addAction(gpu_config_action)
+
+    def _open_gpu_settings(self):
+        """Opens the GPU configuration dialog."""
+        dialog = GpuSettingsDialog(self.app_settings, self)
+        dialog.exec()
+
     def _create_status_bar(self):
         self.status_bar = QStatusBar(self)
         self.setStatusBar(self.status_bar)
@@ -106,7 +122,7 @@ class MainWindow(QMainWindow):
         output_frame = QFrame()
         output_frame.setFrameShape(QFrame.Shape.StyledPanel)
         output_layout = QVBoxLayout(output_frame)
-        
+
         title_label = QLabel("Output Settings")
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         output_layout.addWidget(title_label)
@@ -138,7 +154,7 @@ class MainWindow(QMainWindow):
     def _create_slice_viewer_panel(self):
         self.slice_viewer = SliceViewer()
         self.right_panel_layout.addWidget(self.slice_viewer)
-        
+
     def open_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Open Slice Directory", ".")
         if not dir_path: return
@@ -212,14 +228,16 @@ class MainWindow(QMainWindow):
         self.set_ui_enabled(False)
         self.progress_bar.setValue(0)
         self.progress_bar.show()
-        
+
         save_debug = self.debug_checkbox.isChecked()
-        
+
         self.processing_thread = ProcessingThread(
-            slice_loader=self.slice_loader, 
-            config=config, 
+            slice_loader=self.slice_loader,
+            config=config,
             output_path=output_path,
-            save_debug=save_debug
+            app_settings=self.app_settings,
+            save_debug=save_debug,
+            window_size=5 # This should be made configurable in the UI
         )
         self.processing_thread.progress_update.connect(self.update_progress)
         self.processing_thread.finished.connect(self.on_processing_finished)
@@ -241,7 +259,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"An error occurred: {message}")
         self.set_ui_enabled(True)
         self.progress_bar.hide()
-        QMessageBox.critical(self, "Processing Error", f"An error occurred during processing:\n\n{message}")
+        QMessageBox.critical(self, "Error", f"An error occurred during processing:\n\n{message}")
 
     def set_ui_enabled(self, enabled: bool):
         self.left_panel_widget.setEnabled(enabled)

@@ -1,146 +1,143 @@
 # -*- coding: utf-8 -*-
 """
 Module: parameter_panel.py
-Author: Gemini
-Description: A PyQt6 widget for dynamically configuring the processing pipeline.
+Author: Jules (Refactored for GPU Shaders)
+Description: A PyQt6 widget for dynamically configuring the GPU processing pipeline
+             by selecting and ordering GLSL compute shaders.
 """
 
+import os
+from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QComboBox,
-    QPushButton, QListWidget, QListWidgetItem, QSpinBox,
+    QPushButton, QListWidget, QListWidgetItem
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from typing import Dict, Any, List
 
-class OperationWidget(QWidget):
+class ShaderStepWidget(QWidget):
     """
-    A widget representing a single operation in the processing pipeline.
-    It contains controls for the operation's parameters (e.g., iterations).
+    A widget representing a single shader step in the processing pipeline.
+    For now, it simply displays the shader's name. Future versions could
+    parse shader uniforms and generate controls for them.
     """
-    def __init__(self, op_name: str):
+    def __init__(self, shader_name: str):
         super().__init__()
-        self.op_name = op_name
-        
+        self.shader_name = shader_name
+
         layout = QHBoxLayout()
         layout.setContentsMargins(5, 5, 5, 5)
-        
-        self.label = QLabel(f"<b>{op_name.replace('_', ' ').title()}</b>")
+
+        # Display the shader name, formatted nicely
+        display_name = shader_name.replace('_', ' ').title()
+        self.label = QLabel(f"<b>{display_name}</b>")
         layout.addWidget(self.label)
-        
-        # Add parameter controls based on operation type
+
+        # Placeholder for future auto-generated uniform controls
         self.param_widgets = {}
-        if op_name in ["erode", "dilate", "open", "close"]:
-            self.iterations_label = QLabel("Iterations:")
-            self.iterations_spinbox = QSpinBox()
-            self.iterations_spinbox.setRange(1, 99)
-            self.iterations_spinbox.setValue(1)
-            layout.addWidget(self.iterations_label)
-            layout.addWidget(self.iterations_spinbox)
-            self.param_widgets["iterations"] = self.iterations_spinbox
-        
+
         self.setLayout(layout)
 
-    def get_params(self) -> Dict[str, Any]:
-        """Returns the parameters for this operation as a dictionary."""
-        params = {"operation": self.op_name}
-        for key, widget in self.param_widgets.items():
-            params[key] = widget.value()
-        return params
+    def get_step_config(self) -> Dict[str, Any]:
+        """Returns the configuration for this shader step."""
+        # In the future, this would gather values from self.param_widgets
+        uniforms = {}
+        return {"shader_name": self.shader_name, "uniforms": uniforms}
 
 class ParameterPanel(QFrame):
     """
-    The main panel for building and managing the processing pipeline steps.
+    The main panel for building and managing the GPU processing pipeline.
     """
-    # Signal to emit when the configuration might change RAM usage
     config_changed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        
+
         main_layout = QVBoxLayout(self)
-        
-        # --- Title ---
-        title_label = QLabel("Processing Pipeline")
+
+        title_label = QLabel("GPU Processing Pipeline")
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         main_layout.addWidget(title_label)
-        
-        # --- List of Operations ---
+
         self.ops_list_widget = QListWidget()
         self.ops_list_widget.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         self.ops_list_widget.setStyleSheet("QListWidget::item { border-bottom: 1px solid #ccc; }")
         main_layout.addWidget(self.ops_list_widget)
-        
-        # --- Add Operation Controls ---
-        add_op_layout = QHBoxLayout()
-        self.op_combo = QComboBox()
-        self.op_combo.addItems([
-            "gradient_sobel", "gradient_scharr", "erode", 
-            "dilate", "open", "close"
-        ])
-        
-        self.add_op_button = QPushButton("Add Step")
-        self.add_op_button.clicked.connect(self.add_operation)
-        
-        add_op_layout.addWidget(self.op_combo, 1)
-        add_op_layout.addWidget(self.add_op_button)
-        main_layout.addLayout(add_op_layout)
-        
-        # --- Remove Operation Button ---
-        self.remove_op_button = QPushButton("Remove Selected Step")
-        self.remove_op_button.clicked.connect(self.remove_operation)
-        main_layout.addWidget(self.remove_op_button)
 
-    def add_operation(self):
-        """Adds a new operation to the pipeline list."""
-        op_name = self.op_combo.currentText()
-        op_widget = OperationWidget(op_name)
-        
+        add_op_layout = QHBoxLayout()
+        self.shader_combo = QComboBox()
+        self._populate_shader_combo()
+
+        self.add_step_button = QPushButton("Add Shader Step")
+        self.add_step_button.clicked.connect(self.add_shader_step)
+
+        add_op_layout.addWidget(self.shader_combo, 1)
+        add_op_layout.addWidget(self.add_step_button)
+        main_layout.addLayout(add_op_layout)
+
+        self.remove_step_button = QPushButton("Remove Selected Step")
+        self.remove_step_button.clicked.connect(self.remove_shader_step)
+        main_layout.addWidget(self.remove_step_button)
+
+    def _populate_shader_combo(self):
+        """Scans the 'shaders' directory and populates the combo box."""
+        shader_dir = Path("./shaders")
+        if not shader_dir.exists():
+            print("Warning: 'shaders' directory not found.")
+            return
+
+        # Find all files ending in .comp (compute shader)
+        shader_files = [f for f in os.listdir(shader_dir) if f.endswith(".comp")]
+        shader_names = [Path(f).stem for f in shader_files] # Get filename without extension
+
+        self.shader_combo.addItems(shader_names)
+
+    def add_shader_step(self):
+        """Adds a new shader step to the pipeline list."""
+        shader_name = self.shader_combo.currentText()
+        if not shader_name:
+            return
+
+        shader_widget = ShaderStepWidget(shader_name)
+
         list_item = QListWidgetItem(self.ops_list_widget)
-        # Set a hint for the size, especially important for custom widgets
-        list_item.setSizeHint(op_widget.sizeHint())
-        
+        list_item.setSizeHint(shader_widget.sizeHint())
+
         self.ops_list_widget.addItem(list_item)
-        self.ops_list_widget.setItemWidget(list_item, op_widget)
+        self.ops_list_widget.setItemWidget(list_item, shader_widget)
         self.config_changed.emit()
 
-    def remove_operation(self):
-        """Removes the currently selected operation from the list."""
+    def remove_shader_step(self):
+        """Removes the currently selected shader step from the list."""
         current_row = self.ops_list_widget.currentRow()
         if current_row >= 0:
             self.ops_list_widget.takeItem(current_row)
             self.config_changed.emit()
 
     def get_config(self) -> Dict[str, Any]:
-        """
-        Builds and returns the configuration dictionary from the UI widgets.
-        """
+        """Builds the GPU pipeline configuration from the UI widgets."""
         steps = []
         for i in range(self.ops_list_widget.count()):
             item = self.ops_list_widget.item(i)
-            op_widget = self.ops_list_widget.itemWidget(item)
-            if isinstance(op_widget, OperationWidget):
-                steps.append(op_widget.get_params())
-        
+            shader_widget = self.ops_list_widget.itemWidget(item)
+            if isinstance(shader_widget, ShaderStepWidget):
+                steps.append(shader_widget.get_step_config())
+
         return {"steps": steps}
 
     def set_config(self, config: Dict[str, Any]):
-        """
-        Populates the UI from a loaded configuration dictionary.
-        """
+        """Populates the UI from a loaded GPU pipeline configuration."""
         self.ops_list_widget.clear()
         if "steps" in config:
             for step in config["steps"]:
-                op_name = step.get("operation")
-                if op_name:
-                    op_widget = OperationWidget(op_name)
-                    # Set parameters from config
-                    for key, value in step.items():
-                        if key in op_widget.param_widgets:
-                            op_widget.param_widgets[key].setValue(value)
-                    
+                shader_name = step.get("shader_name")
+                if shader_name:
+                    # Future: Pass uniform values from 'step' to the widget
+                    shader_widget = ShaderStepWidget(shader_name)
+
                     list_item = QListWidgetItem(self.ops_list_widget)
-                    list_item.setSizeHint(op_widget.sizeHint())
+                    list_item.setSizeHint(shader_widget.sizeHint())
                     self.ops_list_widget.addItem(list_item)
-                    self.ops_list_widget.setItemWidget(list_item, op_widget)
+                    self.ops_list_widget.setItemWidget(list_item, shader_widget)
         self.config_changed.emit()

@@ -1,0 +1,10 @@
+# Core Application Dependencies
+pyside6
+numpy
+opencv-python
+moderngl
+numba
+pyopenvdb
+
+# Testing Dependencies
+pytest
