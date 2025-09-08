@@ -1,0 +1,20 @@
+# GUI Framework
+PySide6
+
+# Core Voxel Engine
+# Note: pyopenvdb requires a compatible OpenVDB installation.
+# See SETUP.md for compilation instructions.
+pyopenvdb==12.1.0
+
+# GPU Compute & Rendering
+moderngl
+
+# CPU Acceleration & Numerics
+numba
+numpy
+
+# Image I/O
+opencv-python
+
+# Testing
+pytest

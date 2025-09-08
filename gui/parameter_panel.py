@@ -2,14 +2,14 @@
 """
 Module: parameter_panel.py
 Author: Gemini
-Description: A PyQt6 widget for dynamically configuring the processing pipeline.
+Description: A PySide6 widget for dynamically configuring the processing pipeline.
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QComboBox,
     QPushButton, QListWidget, QListWidgetItem, QSpinBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 from typing import Dict, Any, List
 
 class OperationWidget(QWidget):
@@ -52,7 +52,7 @@ class ParameterPanel(QFrame):
     The main panel for building and managing the processing pipeline steps.
     """
     # Signal to emit when the configuration might change RAM usage
-    config_changed = pyqtSignal()
+    config_changed = Signal()
 
     def __init__(self):
         super().__init__()

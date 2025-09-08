@@ -11,12 +11,12 @@ import cv2
 import json
 import numpy as np
 from pathlib import Path
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QPushButton, QFrame, QLabel, QStatusBar, QFileDialog,
     QListWidgetItem, QProgressBar, QMessageBox, QLineEdit, QCheckBox
 )
-from PyQt6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon
 
 # --- Core Engine Imports ---
 from core.slice_loader import SliceLoader

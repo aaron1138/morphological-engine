@@ -2,14 +2,14 @@
 """
 Module: slice_viewer.py
 Author: Gemini
-Description: A PyQt6 widget for displaying and interacting with slice images.
+Description: A PySide6 widget for displaying and interacting with slice images.
              Supports panning and zooming.
 """
 
 import numpy as np
-from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
-from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt
+from PySide6.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem
+from PySide6.QtGui import QPixmap, QImage
+from PySide6.QtCore import Qt
 
 class SliceViewer(QGraphicsView):
     """

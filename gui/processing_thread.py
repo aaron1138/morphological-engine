@@ -9,7 +9,7 @@ Description: A QThread subclass for running the core processing engine in the
 import cv2
 import numpy as np
 from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 from typing import Dict, Any
 
 # --- Core Engine Imports ---
@@ -21,10 +21,10 @@ class ProcessingThread(QThread):
     """
     Runs the full voxel processing pipeline in a separate thread and saves results.
     """
-    progress_update = pyqtSignal(int, int)
+    progress_update = Signal(int, int)
     # Finished signal no longer needs to carry data, just indicates completion.
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+    finished = Signal()
+    error = Signal(str)
 
     def __init__(self, slice_loader: SliceLoader, config: Dict[str, Any], output_path: str, save_debug: bool, window_size: int = 5):
         super().__init__()
