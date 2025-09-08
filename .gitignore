@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.nox/
+.eggs/
+*.egg-info/
+*.egg
+instance/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.hypothesis/
+
+# Build artifacts
+build/
+dist/
+develop-eggs/
+sdist/
+wheelhouse/
+*.spec
+
+# IDEs and editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Configuration
+config.json
+run_log.json
