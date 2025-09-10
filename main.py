@@ -114,8 +114,21 @@ class MainWindow(QMainWindow):
         self.left_panel_layout.addWidget(self.file_list_widget)
 
     def _create_parameter_panel(self):
+        # --- Pipeline Type Selector ---
+        pipeline_label = QLabel("Processing Engine:")
+        self.pipeline_combo = QComboBox()
+        self.pipeline_combo.addItems(["ModernGL (In-Process)", "RawGL (External)"])
+        self.left_panel_layout.addWidget(pipeline_label)
+        self.left_panel_layout.addWidget(self.pipeline_combo)
+
         self.param_panel = ParameterPanel()
         self.left_panel_layout.addWidget(self.param_panel)
+
+        # Connect the pipeline selector to the parameter panel
+        self.pipeline_combo.currentTextChanged.connect(self.param_panel.set_pipeline_mode)
+        # Initialize the panel with the default mode
+        self.param_panel.set_pipeline_mode(self.pipeline_combo.currentText())
+
 
     def _create_output_panel(self):
         """Creates the panel for output settings."""
@@ -221,8 +234,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please select an output directory.")
             return
         config = self.param_panel.get_config()
-        if not config["steps"]:
-            QMessageBox.warning(self, "Warning", "The processing pipeline is empty. Please add at least one step.")
+        pipeline_mode = self.pipeline_combo.currentText()
+
+        # --- Pipeline-aware validation ---
+        is_config_valid = False
+        if "ModernGL" in pipeline_mode:
+            if config.get("steps"):
+                is_config_valid = True
+        elif "RawGL" in pipeline_mode:
+            if config.get("shader_path"):
+                is_config_valid = True
+
+        if not is_config_valid:
+            QMessageBox.warning(self, "Warning", "The processing pipeline is not configured. Please add a shader or step.")
             return
 
         self.set_ui_enabled(False)
@@ -230,6 +254,13 @@ class MainWindow(QMainWindow):
         self.progress_bar.show()
 
         save_debug = self.debug_checkbox.isChecked()
+
+        pipeline_mode = self.pipeline_combo.currentText()
+
+        # The processing thread needs to know which pipeline to run.
+        # This will require a larger refactor of ProcessingThread in the next phase.
+        # For now, we'll pass the mode as a string.
+        config["pipeline_mode"] = pipeline_mode
 
         self.processing_thread = ProcessingThread(
             slice_loader=self.slice_loader,

@@ -34,6 +34,7 @@ class AppSettings:
         """Returns the default application settings."""
         return {
             "gpu_device_id": -1,  # -1 for auto/default
+            "rawgl_executable_path": "", # Path to rawgl.exe
             "ui_theme": "dark",
             "last_slice_dir": None,
             "last_output_dir": None,
