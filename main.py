@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QPushButton, QFrame, QLabel, QStatusBar, QFileDialog,
     QListWidgetItem, QProgressBar, QMessageBox, QLineEdit, QCheckBox
 )
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtGui import QAction, QIcon, QCloseEvent
 
 # --- Core Engine Imports ---
 from core.slice_loader import SliceLoader
@@ -37,10 +37,14 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("mSLA Morphological Engine")
-        self.setGeometry(100, 100, 1280, 720)
-        
+
         self.slice_loader: SliceLoader | None = None
         self.processing_thread: ProcessingThread | None = None
+        self.app_config = config_manager.load_app_config()
+
+        # Restore window geometry
+        geo = self.app_config.get("window_geometry", {})
+        self.setGeometry(geo.get("x", 100), geo.get("y", 100), geo.get("width", 1280), geo.get("height", 720))
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -59,10 +63,34 @@ class MainWindow(QMainWindow):
         self._create_status_bar()
         self._create_file_management_panel()
         self._create_parameter_panel()
-        self._create_output_panel() # New panel for output settings
+        self._create_output_panel()
         self._create_slice_viewer_panel()
 
+        self._load_app_settings()
+
         self.show()
+
+    def _load_app_settings(self):
+        """Loads persistent application settings and applies them to the UI."""
+        self.param_panel.set_rawgl_config(self.app_config)
+        self.output_dir_line_edit.setText(self.app_config.get("last_output_directory", ""))
+        self.debug_checkbox.setChecked(self.app_config.get("save_debug_steps", False))
+
+    def _save_app_settings(self):
+        """Saves persistent application settings from the UI."""
+        self.app_config.update(self.param_panel.get_rawgl_config())
+        self.app_config["last_output_directory"] = self.output_dir_line_edit.text()
+        self.app_config["save_debug_steps"] = self.debug_checkbox.isChecked()
+        self.app_config["window_geometry"] = {
+            "x": self.x(), "y": self.y(),
+            "width": self.width(), "height": self.height()
+        }
+        config_manager.save_app_config(self.app_config)
+
+    def closeEvent(self, event: QCloseEvent):
+        """Overrides the window close event to save settings."""
+        self._save_app_settings()
+        event.accept()
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -71,11 +99,11 @@ class MainWindow(QMainWindow):
         open_action.triggered.connect(self.open_directory)
         file_menu.addAction(open_action)
         file_menu.addSeparator()
-        save_config_action = QAction("&Save Configuration...", self)
-        save_config_action.triggered.connect(self.save_config)
+        save_config_action = QAction("&Save Pipeline...", self)
+        save_config_action.triggered.connect(self.save_pipeline_config)
         file_menu.addAction(save_config_action)
-        load_config_action = QAction("&Load Configuration...", self)
-        load_config_action.triggered.connect(self.load_config)
+        load_config_action = QAction("&Load Pipeline...", self)
+        load_config_action.triggered.connect(self.load_pipeline_config)
         file_menu.addAction(load_config_action)
         file_menu.addSeparator()
         exit_action = QAction("&Exit", self)
@@ -106,12 +134,11 @@ class MainWindow(QMainWindow):
         output_frame = QFrame()
         output_frame.setFrameShape(QFrame.Shape.StyledPanel)
         output_layout = QVBoxLayout(output_frame)
-        
+
         title_label = QLabel("Output Settings")
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         output_layout.addWidget(title_label)
 
-        # Output directory selection
         dir_layout = QHBoxLayout()
         self.output_dir_line_edit = QLineEdit()
         self.output_dir_line_edit.setPlaceholderText("Select Output Directory...")
@@ -122,13 +149,11 @@ class MainWindow(QMainWindow):
         dir_layout.addWidget(browse_button)
         output_layout.addLayout(dir_layout)
 
-        # Debug checkbox
         self.debug_checkbox = QCheckBox("Save intermediate debug steps")
         output_layout.addWidget(self.debug_checkbox)
 
         self.left_panel_layout.addWidget(output_frame)
 
-        # Add the main action button here, after all other controls
         self.run_button = QPushButton("Run Processing")
         self.run_button.setFixedHeight(40)
         self.run_button.setStyleSheet("font-size: 14pt; font-weight: bold;")
@@ -138,11 +163,12 @@ class MainWindow(QMainWindow):
     def _create_slice_viewer_panel(self):
         self.slice_viewer = SliceViewer()
         self.right_panel_layout.addWidget(self.slice_viewer)
-        
+
     def open_directory(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Open Slice Directory", ".")
+        dir_path = QFileDialog.getExistingDirectory(self, "Open Slice Directory", self.app_config.get("last_slice_directory", "."))
         if not dir_path: return
         try:
+            self.app_config["last_slice_directory"] = dir_path
             self.status_bar.showMessage(f"Scanning directory: {dir_path}...")
             self.slice_loader = SliceLoader(dir_path)
             self.file_list_widget.clear()
@@ -167,33 +193,32 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Error displaying slice: {e}")
 
     def select_output_directory(self):
-        """Opens a dialog to select the output directory."""
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", ".")
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", self.app_config.get("last_output_directory", "."))
         if dir_path:
             self.output_dir_line_edit.setText(dir_path)
 
-    def save_config(self):
-        config = self.param_panel.get_config()
+    def save_pipeline_config(self):
+        config = self.param_panel.get_pipeline_config()
         if not config["steps"]:
             QMessageBox.warning(self, "Warning", "Pipeline is empty. Nothing to save.")
             return
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", "", "JSON Files (*.json)")
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Pipeline Configuration", "", "JSON Files (*.json)")
         if not file_path: return
         try:
             config_manager.save_configuration(config, file_path)
-            self.status_bar.showMessage(f"Configuration saved to {file_path}")
+            self.status_bar.showMessage(f"Pipeline saved to {file_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{e}")
+            QMessageBox.critical(self, "Error", f"Failed to save pipeline:\n{e}")
 
-    def load_config(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Configuration", "", "JSON Files (*.json)")
+    def load_pipeline_config(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Load Pipeline Configuration", "", "JSON Files (*.json)")
         if not file_path: return
         try:
             config = config_manager.load_configuration(file_path)
-            self.param_panel.set_config(config)
-            self.status_bar.showMessage(f"Configuration loaded from {file_path}")
+            self.param_panel.set_pipeline_config(config)
+            self.status_bar.showMessage(f"Pipeline loaded from {file_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{e}")
+            QMessageBox.critical(self, "Error", f"Failed to load pipeline:\n{e}")
 
     def run_processing(self):
         # --- Validation ---
@@ -204,20 +229,27 @@ class MainWindow(QMainWindow):
         if not output_path:
             QMessageBox.warning(self, "Warning", "Please select an output directory.")
             return
-        config = self.param_panel.get_config()
-        if not config["steps"]:
-            QMessageBox.warning(self, "Warning", "The processing pipeline is empty. Please add at least one step.")
+
+        pipeline_config = self.param_panel.get_pipeline_config()
+        if not pipeline_config["steps"]:
+            QMessageBox.warning(self, "Warning", "The processing pipeline is empty. Please add at least one shader step.")
             return
+
+        # Combine pipeline config with rawgl config for the thread
+        full_config = {
+            **self.param_panel.get_rawgl_config(),
+            **pipeline_config
+        }
 
         self.set_ui_enabled(False)
         self.progress_bar.setValue(0)
         self.progress_bar.show()
-        
+
         save_debug = self.debug_checkbox.isChecked()
-        
+
         self.processing_thread = ProcessingThread(
-            slice_loader=self.slice_loader, 
-            config=config, 
+            slice_loader=self.slice_loader,
+            config=full_config,
             output_path=output_path,
             save_debug=save_debug
         )
@@ -227,7 +259,7 @@ class MainWindow(QMainWindow):
         self.processing_thread.start()
 
     def update_progress(self, value, total):
-        self.status_bar.showMessage(f"Processing window {value} of {total}...")
+        self.status_bar.showMessage(f"Processing slice {value} of {total}...")
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(value)
 

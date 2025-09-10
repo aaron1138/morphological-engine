@@ -16,6 +16,7 @@ APP_CONFIG_FILE = 'app_config.json'
 def get_default_app_config() -> Dict[str, Any]:
     """Returns the default application settings."""
     return {
+        "rawgl_path": "",
         "last_slice_directory": "",
         "last_output_directory": "",
         "selected_gpu": None,
