@@ -43,6 +43,7 @@ import xy_blend_processor
 import lut_manager
 from pyside_xy_blend_tab import XYBlendTab
 from roi_tracker import ROITracker
+from rawgl_panel import RawGLPanel
 
 class ImageProcessorThread(QThread):
     """
