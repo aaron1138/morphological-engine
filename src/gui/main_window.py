@@ -2,7 +2,7 @@ import sys
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QHBoxLayout, QVBoxLayout, QLabel, QFrame,
-    QMenuBar
+    QMenuBar, QPushButton
 )
 from PySide6.QtGui import QAction
 from PySide6.QtCore import Qt
@@ -46,20 +46,73 @@ class MainWindow(QMainWindow):
         # This is where the ModernGL/PySide6 integration widget would go
         main_layout.addWidget(center_panel, stretch=1)
 
-        # --- Right Panel (Settings & Properties) ---
-        right_panel = QFrame()
-        right_panel.setFrameShape(QFrame.Shape.StyledPanel)
-        right_panel.setMinimumWidth(300)
-        right_panel.setMaximumWidth(500)
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(QLabel("<b>Properties & Processing</b>"))
-        # In a real app, this would contain various QGroupBoxes, sliders, etc.
-        right_layout.addStretch()
-        main_layout.addWidget(right_panel)
+        # --- Right Panel (RawGL Pipeline) ---
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_widget.setMinimumWidth(500)
+
+        # Import and add the pipeline panel
+        from .rawgl_pipeline_panel import RawGLPipelinePanel
+        self.pipeline_panel = RawGLPipelinePanel()
+        right_layout.addWidget(self.pipeline_panel)
+
+        # Add a "Run" button
+        self.run_button = QPushButton("Run Processing Pipeline")
+        self.run_button.setFixedHeight(40)
+        self.run_button.clicked.connect(self._run_rawgl_pipeline)
+        right_layout.addWidget(self.run_button)
+
+        main_layout.addWidget(right_widget)
 
         self._create_menu_bar()
         self._create_status_bar()
-        print("Main window scaffold created.")
+
+        # To hold the controller instance while it's running
+        self.rawgl_controller = None
+
+        print("Main window scaffold created and RawGL panel integrated.")
+
+    def _run_rawgl_pipeline(self):
+        """Initiates the RawGL processing pipeline."""
+        pipeline_def = self.pipeline_panel.get_pipeline()
+        if not pipeline_def:
+            print("Pipeline is empty. Nothing to run.")
+            return
+
+        # Assuming 'rawgl' is in the system PATH or in the same directory
+        # In a real app, this path would be configurable.
+        rawgl_executable = "rawgl"
+
+        from src.processing.rawgl_controller import RawGLController
+        self.rawgl_controller = RawGLController(pipeline_def, rawgl_executable)
+
+        # Connect signals to handlers
+        self.rawgl_controller.progress_update.connect(self._handle_pipeline_progress)
+        self.rawgl_controller.log_message.connect(self._handle_pipeline_log)
+        self.rawgl_controller.finished.connect(self._handle_pipeline_finished)
+
+        self.rawgl_controller.run()
+        # Disable the run button while processing
+        self.sender().setEnabled(False)
+
+    def _handle_pipeline_progress(self, step, total):
+        """Updates the status bar with the current progress."""
+        self.statusBar().showMessage(f"Processing step {step} of {total}...")
+
+    def _handle_pipeline_log(self, message):
+        """Prints log messages from the controller."""
+        # In a real app, this would go to a logging widget.
+        print(message)
+
+    def _handle_pipeline_finished(self, success, message):
+        """Handles the completion of the pipeline."""
+        print(f"Pipeline finished. Success: {success}. Message: {message}")
+        self.statusBar().showMessage(message, 10000) # Show message for 10 seconds
+
+        # Re-enable the run button
+        self.run_button.setEnabled(True)
+
+        self.rawgl_controller = None # Release the controller
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
