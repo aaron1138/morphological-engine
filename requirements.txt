@@ -1,7 +1,4 @@
-# See SETUP.md for instructions on building and installing OpenVDB / NanoVDB.
-moderngl
-numpy
+# Python dependencies for the mSLA Morphological Engine
+PyQt6
 Pillow
-numba
-PyOpenGL
-PySide6
+dask[complete]

@@ -6,70 +6,111 @@ Description: A PyQt6 widget for configuring and running RawGL processing pipelin
 """
 
 import subprocess
+import os
+import tempfile
+import numpy as np
+from PIL import Image
+from dask.distributed import Client, LocalCluster
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
-    QLineEdit, QFileDialog, QTextEdit, QMessageBox
+    QLineEdit, QFileDialog, QTextEdit, QMessageBox, QSpinBox, QCheckBox
 )
 from PyQt6.QtCore import QThread, pyqtSignal
+from core.dask_handler import load_image_stack_as_dask_array
 
-class RawGLProcessingThread(QThread):
+def run_rawgl_on_slice(slice_data, output_path, rawgl_path, shader_path):
     """
-    A QThread that runs the RawGL executable in a separate process.
+    This function is executed by a Dask worker. It saves a numpy array slice
+    to a temporary file and runs RawGL on it.
     """
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp_in:
+        input_filepath = tmp_in.name
+        Image.fromarray(slice_data).save(input_filepath)
+
+    try:
+        command = [
+            rawgl_path,
+            '--pass_vertfrag', shader_path,
+            '--in', 'Texture0', input_filepath,
+            '--out', 'OutColor', output_path,
+            '--out_format', 'r8',
+            '--out_channels', '1',
+            '--out_bits', '8'
+        ]
+        # Use subprocess.run as we want to wait for completion
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        return f"Successfully processed {output_path}\n{result.stdout}"
+    finally:
+        # Clean up the temporary input file
+        os.remove(input_filepath)
+
+class DaskRawGLThread(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, command: list):
+    def __init__(self, params):
         super().__init__()
-        self.command = command
+        self.params = params
 
     def run(self):
-        """
-        Executes the RawGL command and streams its output.
-        """
         try:
-            self.progress.emit(f"Running command: {' '.join(self.command)}")
-            process = subprocess.Popen(
-                self.command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, # Redirect stderr to stdout
-                text=True,
-                encoding='utf-8',
-                errors='replace' # Handle potential encoding errors
-            )
+            self.progress.emit(f"Initializing Dask cluster with {self.params['workers']} workers...")
+            with LocalCluster(n_workers=self.params['workers'], threads_per_worker=1) as cluster, Client(cluster) as client:
+                self.progress.emit(f"Dask dashboard link: {client.dashboard_link}")
 
-            # Read and emit output line by line
-            while True:
-                line = process.stdout.readline()
-                if not line:
-                    break
-                self.progress.emit(line.strip())
+                dask_array = load_image_stack_as_dask_array(self.params['input_dir'], chunk_size=(64, 64, 64))
+                if dask_array is None:
+                    self.error.emit("Failed to create Dask array. Check input directory.")
+                    return
 
-            process.wait() # Wait for the process to complete
+                self.progress.emit(f"Dask array shape: {dask_array.shape}, chunks: {dask_array.chunksize}")
 
-            if process.returncode != 0:
-                self.error.emit(f"RawGL process exited with error code {process.returncode}")
+                tasks = []
+                # XY Plane Processing
+                if self.params['process_xy']:
+                    self.progress.emit("Generating XY plane tasks...")
+                    for i in range(dask_array.shape[0]):
+                        output_path = os.path.join(self.params['output_dir'], f"xy_slice_{i:04d}.png")
+                        tasks.append(dask.delayed(run_rawgl_on_slice)(dask_array[i, :, :], output_path, self.params['rawgl_path'], self.params['shader_path']))
 
-        except FileNotFoundError:
-            self.error.emit(f"Error: The executable '{self.command[0]}' was not found.")
+                # XZ Plane Processing
+                if self.params['process_xz']:
+                    self.progress.emit("Generating XZ plane tasks...")
+                    for i in range(dask_array.shape[1]):
+                         output_path = os.path.join(self.params['output_dir'], f"xz_slice_{i:04d}.png")
+                         tasks.append(dask.delayed(run_rawgl_on_slice)(dask_array[:, i, :], output_path, self.params['rawgl_path'], self.params['shader_path']))
+
+                # YZ Plane Processing
+                if self.params['process_yz']:
+                    self.progress.emit("Generating YZ plane tasks...")
+                    for i in range(dask_array.shape[2]):
+                        output_path = os.path.join(self.params['output_dir'], f"yz_slice_{i:04d}.png")
+                        tasks.append(dask.delayed(run_rawgl_on_slice)(dask_array[:, :, i], output_path, self.params['rawgl_path'], self.params['shader_path']))
+
+                if not tasks:
+                    self.error.emit("No processing planes selected. Nothing to do.")
+                    return
+
+                self.progress.emit(f"Submitting {len(tasks)} tasks to Dask workers...")
+                results = dask.compute(*tasks)
+
+                for res in results:
+                    self.progress.emit(res)
+
         except Exception as e:
-            self.error.emit(f"An unexpected error occurred: {e}")
+            self.error.emit(f"An unexpected error occurred in the Dask thread: {e}")
         finally:
             self.finished.emit()
 
-
 class RawGLController(QFrame):
-    """
-    A widget for controlling the RawGL external executable.
-    """
     def __init__(self):
         super().__init__()
         self.setFrameShape(QFrame.Shape.StyledPanel)
 
         main_layout = QVBoxLayout(self)
 
-        title_label = QLabel("RawGL External Processor")
+        title_label = QLabel("RawGL Dask Processor")
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         main_layout.addWidget(title_label)
 
@@ -80,20 +121,45 @@ class RawGLController(QFrame):
         self.shader_path = self._create_path_selector("Shader File:")
         main_layout.addLayout(self.shader_path['layout'])
 
-        self.input_path = self._create_path_selector("Input Image:")
-        main_layout.addLayout(self.input_path['layout'])
+        self.input_dir = self._create_path_selector("Input Directory:", is_directory=True)
+        main_layout.addLayout(self.input_dir['layout'])
 
-        self.output_path = self._create_path_selector("Output Image:", save_file=True)
-        main_layout.addLayout(self.output_path['layout'])
+        self.output_dir = self._create_path_selector("Output Directory:", is_directory=True)
+        main_layout.addLayout(self.output_dir['layout'])
+
+        # --- Dask Worker Settings ---
+        dask_layout = QHBoxLayout()
+        dask_label = QLabel("Dask Workers:")
+        self.worker_spinbox = QSpinBox()
+        self.worker_spinbox.setRange(1, 16)
+        self.worker_spinbox.setValue(4)
+        dask_layout.addWidget(dask_label)
+        dask_layout.addWidget(self.worker_spinbox)
+        dask_layout.addStretch()
+        main_layout.addLayout(dask_layout)
+
+        # --- Plane Selection ---
+        plane_layout = QHBoxLayout()
+        plane_label = QLabel("Process Planes:")
+        self.xy_checkbox = QCheckBox("XY")
+        self.xz_checkbox = QCheckBox("XZ")
+        self.yz_checkbox = QCheckBox("YZ")
+        self.xy_checkbox.setChecked(True)
+        plane_layout.addWidget(plane_label)
+        plane_layout.addWidget(self.xy_checkbox)
+        plane_layout.addWidget(self.xz_checkbox)
+        plane_layout.addWidget(self.yz_checkbox)
+        plane_layout.addStretch()
+        main_layout.addLayout(plane_layout)
 
         # --- Run Button ---
-        self.run_button = QPushButton("Run RawGL")
+        self.run_button = QPushButton("Run Dask Processing")
         self.run_button.setFixedHeight(30)
         self.run_button.setStyleSheet("font-size: 12pt;")
         main_layout.addWidget(self.run_button)
 
         # --- Log Output ---
-        log_label = QLabel("RawGL Output:")
+        log_label = QLabel("Processing Log:")
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setFontFamily("Courier")
@@ -104,14 +170,13 @@ class RawGLController(QFrame):
         # Connect signals to slots
         self.rawgl_path['button'].clicked.connect(lambda: self._get_path(self.rawgl_path['line_edit']))
         self.shader_path['button'].clicked.connect(lambda: self._get_path(self.shader_path['line_edit']))
-        self.input_path['button'].clicked.connect(lambda: self._get_path(self.input_path['line_edit']))
-        self.output_path['button'].clicked.connect(lambda: self._get_path(self.output_path['line_edit'], save_file=True))
+        self.input_dir['button'].clicked.connect(lambda: self._get_path(self.input_dir['line_edit'], is_directory=True))
+        self.output_dir['button'].clicked.connect(lambda: self._get_path(self.output_dir['line_edit'], is_directory=True))
 
         self.run_button.clicked.connect(self.run_processing)
         self.processing_thread = None
 
-    def _create_path_selector(self, label_text: str, save_file: bool = False):
-        """Helper method to create a labeled line edit with a browse button."""
+    def _create_path_selector(self, label_text: str, is_directory: bool = False):
         layout = QHBoxLayout()
         label = QLabel(label_text)
         label.setFixedWidth(120)
@@ -124,10 +189,9 @@ class RawGLController(QFrame):
 
         return {"layout": layout, "line_edit": line_edit, "button": button}
 
-    def _get_path(self, line_edit: QLineEdit, save_file: bool = False):
-        """Opens a file dialog and sets the path in the line edit."""
-        if save_file:
-            path, _ = QFileDialog.getSaveFileName(self, "Select Output File", "", "PNG Files (*.png)")
+    def _get_path(self, line_edit: QLineEdit, is_directory: bool = False):
+        if is_directory:
+            path = QFileDialog.getExistingDirectory(self, "Select Directory", "")
         else:
             path, _ = QFileDialog.getOpenFileName(self, "Select File", "")
 
@@ -135,52 +199,41 @@ class RawGLController(QFrame):
             line_edit.setText(path)
 
     def run_processing(self):
-        """
-        Validates inputs, constructs the RawGL command, and starts the processing thread.
-        """
-        paths = {
-            "rawgl": self.rawgl_path['line_edit'].text(),
-            "shader": self.shader_path['line_edit'].text(),
-            "input": self.input_path['line_edit'].text(),
-            "output": self.output_path['line_edit'].text()
+        params = {
+            "rawgl_path": self.rawgl_path['line_edit'].text(),
+            "shader_path": self.shader_path['line_edit'].text(),
+            "input_dir": self.input_dir['line_edit'].text(),
+            "output_dir": self.output_dir['line_edit'].text(),
+            "workers": self.worker_spinbox.value(),
+            "process_xy": self.xy_checkbox.isChecked(),
+            "process_xz": self.xz_checkbox.isChecked(),
+            "process_yz": self.yz_checkbox.isChecked(),
         }
 
-        for name, path in paths.items():
-            if not path:
-                QMessageBox.warning(self, "Missing Input", f"Please provide the path for '{name}'.")
-                return
+        for name, path in params.items():
+            if name.endswith("_dir") or name.endswith("_path"):
+                if not path:
+                    QMessageBox.warning(self, "Missing Input", f"Please provide the path for '{name}'.")
+                    return
 
         self.log_output.clear()
         self.run_button.setEnabled(False)
-        self.log_output.append("--- Starting RawGL process... ---")
+        self.log_output.append("--- Starting Dask processing... ---")
 
-        # Assemble the command for 8-bit single-channel grayscale PNG
-        command = [
-            paths['rawgl'],
-            '--pass_vertfrag', paths['shader'],
-            '--in', 'Texture0', paths['input'],
-            '--out', 'OutColor', paths['output'],
-            '--out_format', 'r8',
-            '--out_channels', '1',
-            '--out_bits', '8'
-        ]
-
-        self.processing_thread = RawGLProcessingThread(command)
+        self.processing_thread = DaskRawGLThread(params)
         self.processing_thread.progress.connect(self.append_log)
         self.processing_thread.error.connect(self.on_processing_error)
         self.processing_thread.finished.connect(self.on_processing_finished)
         self.processing_thread.start()
 
     def append_log(self, text: str):
-        """Appends a line of text to the log output."""
         self.log_output.append(text)
 
     def on_processing_error(self, message: str):
-        """Handles errors reported by the processing thread."""
         self.log_output.append(f"\nERROR: {message}\n")
+        self.on_processing_finished()
 
     def on_processing_finished(self):
-        """Called when the processing thread is finished."""
-        self.log_output.append("\n--- RawGL process finished. ---")
+        self.log_output.append("\n--- Dask processing finished. ---")
         self.run_button.setEnabled(True)
         self.processing_thread = None
