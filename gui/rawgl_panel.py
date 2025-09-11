@@ -1,14 +1,12 @@
 import os
 import sys
-from typing import List, Dict
 
 # Add the src directory to the Python path to import the utils
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from src.rawgl_wrapper import RawGLWrapper
-from src.pipeline_controller import PipelineController
+from src.image_loader import load_png_stack_as_dask_array
+from src.dask_pipeline import run_orthogonal_pipeline
 
 # --- Placeholder for a Qt-like QWidget ---
-# In a real application, this would be `from PySide6.QtWidgets import QWidget`
 class QWidget:
     def __init__(self):
         print("Placeholder QWidget created.")
@@ -17,93 +15,122 @@ class QWidget:
 
 class RawGLPanel(QWidget):
     """
-    A UI panel for configuring and running RawGL processing jobs.
+    A UI panel for configuring and running the Dask-based RawGL pipeline.
     This class is a placeholder for the UI structure and logic.
     """
 
-    def __init__(self, controller: PipelineController):
+    def __init__(self):
         super().__init__()
-        print("Initializing RawGLPanel.")
-        self.controller = controller
+        print("Initializing RawGLPanel for Dask workflow.")
 
         # --- Mock UI State ---
         # These attributes represent the values that would be held by UI widgets
-        # like QLineEdit, QSpinBox, QCheckBox, etc.
+        self.ui_input_dir = "path/to/image_stack/"
         self.ui_rawgl_executable_path = "path/to/rawgl"
         self.ui_shader_path = "shaders/my_effect.frag"
-        self.ui_input_files = ["images/input1.png", "images/input2.png"]
         self.ui_output_dir = "output/"
-        self.ui_width = 512
-        self.ui_height = 512
-        self.ui_is_greyscale_png = True
+        self.ui_dask_workers = 4  # New UI control for thread/worker count
         # --- End Mock UI State ---
 
-    def _gather_settings_from_ui(self) -> Dict:
+    def _gather_settings_from_ui(self) -> dict:
         """
         In a real UI, this method would read the current values from the widgets.
         Here, it just returns the mock state.
         """
         print("Gathering settings from UI controls...")
         return {
-            "executable": self.ui_rawgl_executable_path,
-            "shader": self.ui_shader_path,
-            "inputs": self.ui_input_files,
+            "input_dir": self.ui_input_dir,
             "output_dir": self.ui_output_dir,
-            "size": (self.ui_width, self.ui_height),
-            "greyscale": self.ui_is_greyscale_png
+            "num_workers": self.ui_dask_workers,
+            "rawgl_config": {
+                "executable": self.ui_rawgl_executable_path,
+                "shader_path": self.ui_shader_path,
+            }
         }
 
     def on_run_pipeline_clicked(self):
         """
         This method would be connected to a 'Run' button's clicked signal.
-
-        It gathers settings, creates jobs, and submits them to the controller.
+        It now orchestrates the entire Dask-based workflow.
         """
         print("\n'Run Pipeline' button clicked.")
         settings = self._gather_settings_from_ui()
 
+        # 1. Load the image stack as a Dask array
+        print("\nStep 1: Loading image stack...")
+        dask_volume = load_png_stack_as_dask_array(settings["input_dir"])
+
+        if dask_volume is None:
+            print("Pipeline run cancelled due to loading error.")
+            return
+
+        # 2. Run the orthogonal processing pipeline
+        print("\nStep 2: Starting Dask processing pipeline...")
+        # This function is blocking as it calls dask.compute() internally.
+        # In a real GUI, this would be run in a separate QThread to avoid freezing the UI.
+        processed_yz, processed_xz = run_orthogonal_pipeline(
+            dask_volume=dask_volume,
+            rawgl_config=settings["rawgl_config"],
+            num_workers=settings["num_workers"]
+        )
+
+        # 3. Save the results
+        # In a real app, you might do something more sophisticated. Here we just save one slice.
+        print("\nStep 3: Saving sample results...")
         if not os.path.exists(settings["output_dir"]):
             os.makedirs(settings["output_dir"])
-            print(f"Created output directory: {settings['output_dir']}")
 
-        print(f"Preparing to submit {len(settings['inputs'])} jobs to the pipeline.")
-        for input_file in settings["inputs"]:
-            # Create a unique output path for each input file
-            base_name = os.path.basename(input_file)
-            name, ext = os.path.splitext(base_name)
-            output_path = os.path.join(settings["output_dir"], f"{name}_processed.png")
+        yz_slice_0 = processed_yz[0].compute()
+        xz_slice_0 = processed_xz[0].compute()
 
-            # Create and configure a RawGL job
-            job = RawGLWrapper(settings["executable"])
-            job.add_pass(
-                shader_path=settings["shader"],
-                output_size=settings["size"],
-                output_path=output_path,
-                inputs={'u_texture': input_file},  # Assuming one input texture uniform
-                is_greyscale_png=settings["greyscale"]
-            )
+        Image.fromarray(yz_slice_0).save(os.path.join(settings["output_dir"], "result_yz_000.png"))
+        Image.fromarray(xz_slice_0).save(os.path.join(settings["output_dir"], "result_xz_000.png"))
 
-            # Submit the job to the controller
-            self.controller.submit_job(job)
-
-        print("\nAll jobs submitted. The pipeline is running in the background.")
-        # In a real app, you might update a progress bar here.
-        # For this example, we'll just wait for completion immediately.
-        self.controller.wait_for_completion()
-        self.controller.shutdown()
+        print(f"Saved sample slices to '{settings['output_dir']}'.")
+        print("\nPipeline finished successfully.")
 
 
 if __name__ == '__main__':
-    # This example demonstrates how the UI panel would be instantiated and used.
-    print("--- Running RawGLPanel UI Example ---")
+    # This example demonstrates how the updated UI panel would be used.
+    # It creates dummy data and runs the full Dask pipeline.
+    from PIL import Image
+    import numpy as np
 
-    # 1. Create the backend controller
-    pipeline_controller = PipelineController(max_workers=2)
+    print("--- Running Updated RawGLPanel UI Example ---")
 
-    # 2. Create the UI panel, passing it the controller
-    ui_panel = RawGLPanel(controller=pipeline_controller)
+    # --- Create dummy data for the example ---
+    dummy_input_dir = "temp_png_stack_for_ui"
+    if not os.path.exists(dummy_input_dir):
+        os.makedirs(dummy_input_dir)
+
+    print(f"Creating dummy PNG files in '{dummy_input_dir}'...")
+    for i in range(10):
+        img_data = np.full((128, 128), i * 25, dtype=np.uint8)
+        Image.fromarray(img_data, 'L').save(os.path.join(dummy_input_dir, f"slice_{i:03d}.png"))
+    # --- End dummy data creation ---
+
+    # 1. Create the UI panel
+    ui_panel = RawGLPanel()
+
+    # 2. Override mock UI settings to point to our dummy data
+    ui_panel.ui_input_dir = dummy_input_dir
+    ui_panel.ui_dask_workers = 2 # Use 2 workers for the example
 
     # 3. Simulate the user clicking the 'Run' button
     ui_panel.on_run_pipeline_clicked()
 
-    print("\n--- RawGLPanel UI Example Finished ---")
+    # --- Clean up dummy data ---
+    print("\nCleaning up dummy files...")
+    for f in os.listdir(dummy_input_dir):
+        os.remove(os.path.join(dummy_input_dir, f))
+    os.rmdir(dummy_input_dir)
+    if os.path.exists("result_yz_000.png"): os.remove("result_yz_000.png")
+    if os.path.exists("result_xz_000.png"): os.remove("result_xz_000.png")
+    if os.path.exists("output"):
+        if len(os.listdir("output")) == 2:
+            os.remove("output/result_yz_000.png")
+            os.remove("output/result_xz_000.png")
+        os.rmdir("output")
+
+
+    print("\n--- Updated RawGLPanel UI Example Finished ---")
