@@ -1,130 +1,114 @@
 # -*- coding: utf-8 -*-
 """
 Module: processing_thread.py
-Author: Jules (Refactored for Dual Pipelines)
-Description: A QThread subclass that acts as a dispatcher for running different
-             processing pipelines (e.g., in-process GPU or external tool)
-             in the background.
+Author: Jules (Refactored for Dask)
+Description: A QThread subclass that uses a Dask cluster to run the RawGL
+             pipeline in parallel on orthogonal slices of a 3D volume.
 """
 
-import cv2
-import numpy as np
-import openvdb
 from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 from typing import Dict, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import os
+from concurrent.futures import as_completed
+import dask
+from dask.distributed import Client, LocalCluster
 
 # --- Core Engine Imports ---
 from core.slice_loader import SliceLoader
-from core.voxel_engine import VoxelEngine
-from core.gpu_processor import GpuProcessor
-from core.gpu_pipeline import GpuPipeline
+from core.dask_volume import DaskVolume
 from core.rawgl_pipeline import RawGlPipeline
 from utils.app_settings import AppSettings
 
 class ProcessingThread(QThread):
     """
-    Runs the selected processing pipeline in a separate thread.
+    Uses a Dask cluster to run the RawGL pipeline in parallel.
     """
     progress_update = pyqtSignal(int, int)
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
     def __init__(self, slice_loader: SliceLoader, config: Dict[str, Any],
-                 output_path: str, app_settings: AppSettings,
-                 save_debug: bool, window_size: int = 5):
+                 output_path: str, app_settings: AppSettings):
         super().__init__()
         self.slice_loader = slice_loader
         self.config = config
         self.output_path = Path(output_path)
         self.app_settings = app_settings
-        self.save_debug = save_debug
-        self.window_size = window_size
-        self.center_slice_offset = self.window_size // 2
 
     def run(self):
         """The main work of the thread is done here."""
+        cluster = None
+        client = None
         try:
-            pipeline_mode = self.config.get("pipeline_mode", "ModernGL (In-Process)")
-            print(f"Processing thread started with mode: {pipeline_mode}")
-            self.output_path.mkdir(exist_ok=True)
+            worker_count = self.config.get("dask_worker_count", 4)
+            print(f"Initializing Dask cluster with {worker_count} workers.")
 
-            if "ModernGL" in pipeline_mode:
-                self._run_moderngl_pipeline()
-            elif "RawGL" in pipeline_mode:
-                self._run_rawgl_pipeline()
-            else:
-                raise ValueError(f"Unknown pipeline mode: {pipeline_mode}")
+            # Set up a local Dask cluster
+            cluster = LocalCluster(n_workers=worker_count, threads_per_worker=1)
+            client = Client(cluster)
+
+            print(f"Dask dashboard available at: {client.dashboard_link}")
+
+            # --- Prepare Pipelines and Data ---
+            rawgl_path = self.app_settings.get("rawgl_executable_path")
+            pipeline = RawGlPipeline(self.config, rawgl_path)
+
+            dask_volume = DaskVolume(self.slice_loader)
+
+            # --- Define Tasks for Orthogonal Slices ---
+            tasks = []
+
+            # Create output directories for the different views
+            xz_output_dir = self.output_path / "xz_slices"
+            yz_output_dir = self.output_path / "yz_slices"
+            xz_output_dir.mkdir(exist_ok=True)
+            yz_output_dir.mkdir(exist_ok=True)
+
+            # Generate tasks for XZ slices (iterating through height)
+            for y in range(dask_volume.shape[1]):
+                slice_data = dask_volume.get_xz_slice(y)
+                output_path = xz_output_dir / f"xz_slice_{y:04d}.png"
+                tasks.append((slice_data, str(output_path)))
+
+            # Generate tasks for YZ slices (iterating through width)
+            for x in range(dask_volume.shape[2]):
+                slice_data = dask_volume.get_yz_slice(x)
+                output_path = yz_output_dir / f"yz_slice_{x:04d}.png"
+                tasks.append((slice_data, str(output_path)))
+
+            if not tasks:
+                raise ValueError("No processing tasks were generated.")
+
+            print(f"Submitting {len(tasks)} tasks to Dask cluster...")
+
+            # --- Execute Tasks in Parallel ---
+            # Map the pipeline's run function over the tasks
+            # Dask will compute the slice_data for each task before passing it
+            # to the pipeline.run function.
+            futures = client.map(pipeline.run, *zip(*tasks))
+
+            # --- Update Progress ---
+            completed_count = 0
+            total_tasks = len(tasks)
+            for future in as_completed(futures):
+                try:
+                    future.result() # Check for exceptions from the task
+                except Exception as e:
+                    print(f"A Dask worker failed: {e}")
+                completed_count += 1
+                self.progress_update.emit(completed_count, total_tasks)
 
             self.finished.emit()
-            print("Processing thread finished successfully.")
+            print("Dask processing thread finished successfully.")
 
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.error.emit(str(e))
-
-    def _run_moderngl_pipeline(self):
-        """Executes the in-process GPU pipeline with OpenVDB."""
-        gpu_processor = None
-        try:
-            gpu_processor = GpuProcessor(self.app_settings)
-            engine = VoxelEngine(self.slice_loader, self.window_size)
-            pipeline = GpuPipeline(self.config, gpu_processor)
-            num_windows = len(self.slice_loader) - self.window_size + 1
-            all_slice_paths = self.slice_loader.get_slice_list()
-
-            for i, voxel_grid in enumerate(engine.iter_windows()):
-                center_slice_index_global = i + self.center_slice_offset
-                original_path = all_slice_paths[center_slice_index_global]
-                processed_grid, _ = pipeline.run(voxel_grid, debug=self.save_debug)
-                processed_np = np.zeros((self.window_size, engine.height, engine.width), dtype=np.float32)
-                processed_grid.copyToArray(processed_np)
-                output_slice_float = processed_np[self.center_slice_offset]
-                output_slice_uint8 = np.clip(output_slice_float * 255.0, 0, 255).astype(np.uint8)
-                output_filepath = self.output_path / original_path.name
-                cv2.imwrite(str(output_filepath), output_slice_uint8)
-                self.progress_update.emit(i + 1, num_windows)
         finally:
-            if gpu_processor:
-                gpu_processor.destroy()
-                print("GPU resources released.")
-
-    def _run_rawgl_pipeline(self):
-        """Executes the external RawGL pipeline using multiple threads."""
-        rawgl_path = self.app_settings.get("rawgl_executable_path")
-        if not rawgl_path:
-            raise ValueError("RawGL executable path is not set in settings.")
-
-        pipeline = RawGlPipeline(self.config, rawgl_path)
-        all_slice_paths = self.slice_loader.get_slice_list()
-        total_slices = len(all_slice_paths)
-
-        # Use a thread pool to run RawGL processes in parallel
-        # Default to the number of CPU cores for thread count
-        max_workers = os.cpu_count() or 4
-        print(f"Starting RawGL processing with up to {max_workers} parallel threads.")
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for slice_path in all_slice_paths:
-                input_path = str(self.slice_loader.directory / slice_path.name)
-                output_path = str(self.output_path / slice_path.name)
-                # Submit the pipeline run to the thread pool
-                future = executor.submit(pipeline.run, input_path, output_path)
-                futures.append(future)
-
-            # Update progress as tasks complete
-            completed_count = 0
-            for future in as_completed(futures):
-                try:
-                    # Retrieve result to raise any exceptions that occurred in the thread
-                    future.result()
-                except Exception as e:
-                    # Log the error but continue processing other images
-                    print(f"A RawGL thread failed: {e}")
-                    # We can also emit an error signal if we want partial errors reported
-                completed_count += 1
-                self.progress_update.emit(completed_count, total_slices)
+            # --- CRITICAL: Shut down the Dask cluster ---
+            if client:
+                client.close()
+            if cluster:
+                cluster.close()
+            print("Dask cluster shut down.")

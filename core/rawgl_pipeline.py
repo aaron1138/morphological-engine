@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 Module: rawgl_pipeline.py
-Author: Jules
-Description: A pipeline controller for executing the external RawGL command-line tool.
+Author: Jules (Refactored for Dask)
+Description: A pipeline controller for executing the external RawGL command-line tool
+             on in-memory NumPy arrays provided by a Dask graph.
 """
 
 import subprocess
+import tempfile
+import cv2
+import numpy as np
 from pathlib import Path
 from typing import Dict, Any
 
@@ -13,7 +17,6 @@ class RawGlPipeline:
     """
     Manages and executes a processing pipeline using an external RawGL executable.
     """
-
     def __init__(self, config: Dict[str, Any], rawgl_executable_path: str):
         """
         Initializes the RawGL pipeline controller.
@@ -30,66 +33,60 @@ class RawGlPipeline:
         """Validates the structure of the pipeline configuration."""
         if not self.executable_path.is_file():
             raise FileNotFoundError(f"RawGL executable not found at: {self.executable_path}")
-
         if "shader_path" not in self.config:
             raise ValueError("Configuration must contain a 'shader_path'.")
-
         shader_path = Path(self.config["shader_path"])
         if not shader_path.is_file():
             raise FileNotFoundError(f"Shader file not found at: {shader_path}")
 
-    def run(self, input_path: str, output_path: str):
+    def run(self, slice_data: np.ndarray, output_path: str):
         """
-        Constructs and executes the RawGL command for a single image.
+        Takes an in-memory NumPy array, saves it to a temporary file,
+        and executes the RawGL command on it.
 
         Args:
-            input_path (str): The path to the source image file.
+            slice_data (np.ndarray): The 2D image data for a single slice.
             output_path (str): The path to save the processed image file.
-
-        Raises:
-            subprocess.CalledProcessError: If RawGL returns a non-zero exit code.
         """
         shader_path = self.config["shader_path"]
 
-        # Build the command as a list of arguments
-        command = [
-            str(self.executable_path),
-            # Specify the compute shader
-            '-C', str(shader_path),
-            # Specify the input texture (uniform name 'Texture0' is a common convention)
-            '-i', 'Texture0', str(input_path),
-            # Specify the output file
-            '-o', 'OutColor', str(output_path),
-            # Enforce single-channel, 8-bit output for greyscale PNG
-            '-n', '1', # Number of channels
-            '-b', '8', # Bits per channel
-        ]
+        # Use a temporary file for the input, ensuring it's deleted afterward
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_input_file:
+            input_temp_path = temp_input_file.name
 
-        print(f"Executing RawGL command: {' '.join(command)}")
+            # Save the in-memory numpy array to the temporary PNG file
+            cv2.imwrite(input_temp_path, slice_data)
 
-        try:
-            # Execute the command
-            result = subprocess.run(
-                command,
-                check=True,          # Raise an exception for non-zero exit codes
-                capture_output=True, # Capture stdout and stderr
-                text=True            # Decode stdout/stderr as text
-            )
-            print(f"RawGL processing successful for {Path(input_path).name}.")
-            if result.stdout:
-                print(f"RawGL stdout:\n{result.stdout}")
-            if result.stderr:
-                # RawGL often prints info to stderr, so we just print it.
-                print(f"RawGL stderr:\n{result.stderr}")
+            # Build the command
+            command = [
+                str(self.executable_path),
+                '-C', str(shader_path),
+                '-i', 'Texture0', str(input_temp_path),
+                '-o', 'OutColor', str(output_path),
+                '-n', '1',
+                '-b', '8',
+            ]
 
-        except FileNotFoundError:
-            print(f"ERROR: Could not find the RawGL executable at '{self.executable_path}'.")
-            raise
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: RawGL process failed for {Path(input_path).name} with exit code {e.returncode}.")
-            print(f"  Stderr: {e.stderr}")
-            print(f"  Stdout: {e.stdout}")
-            raise
-        except Exception as e:
-            print(f"An unexpected error occurred while running RawGL: {e}")
-            raise
+            try:
+                # Execute the command
+                subprocess.run(
+                    command,
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+            except FileNotFoundError:
+                raise
+            except subprocess.CalledProcessError as e:
+                # Re-raise with more context
+                error_message = (
+                    f"RawGL failed for input derived from slice data.\n"
+                    f"Exit Code: {e.returncode}\n"
+                    f"Stderr: {e.stderr}\n"
+                    f"Stdout: {e.stdout}"
+                )
+                raise RuntimeError(error_message) from e
+            except Exception as e:
+                raise RuntimeError(f"An unexpected error occurred while running RawGL: {e}") from e
+
+        # print(f"RawGL processing successful for {output_path}") # Too noisy for parallel execution

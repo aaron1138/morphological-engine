@@ -33,6 +33,7 @@ class AppSettings:
     def _get_default_settings(self) -> Dict[str, Any]:
         """Returns the default application settings."""
         return {
+            "dask_worker_count": 4, # Default thread/worker count
             "gpu_device_id": -1,  # -1 for auto/default
             "rawgl_executable_path": "", # Path to rawgl.exe
             "ui_theme": "dark",

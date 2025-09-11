@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 Module: main.py
-Author: Gemini
+Author: Jules (Refactored for Dask/RawGL)
 Description: The main entry point for the mSLA Morphological Engine application.
-             Initializes and displays the main GUI window.
 """
 
 import sys
+import os
 import cv2
 import json
 import numpy as np
@@ -14,7 +14,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QPushButton, QFrame, QLabel, QStatusBar, QFileDialog,
-    QListWidgetItem, QProgressBar, QMessageBox, QLineEdit, QCheckBox
+    QListWidgetItem, QProgressBar, QMessageBox, QLineEdit, QCheckBox, QSpinBox
 )
 from PyQt6.QtGui import QAction, QIcon
 
@@ -38,10 +38,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("mSLA Morphological Engine (GPU)")
+        self.setWindowTitle("mSLA Slicer (Dask/RawGL)")
         self.setGeometry(100, 100, 1280, 720)
 
-        # Initialize the application settings manager
         self.app_settings = AppSettings()
 
         self.slice_loader: SliceLoader | None = None
@@ -64,7 +63,7 @@ class MainWindow(QMainWindow):
         self._create_status_bar()
         self._create_file_management_panel()
         self._create_parameter_panel()
-        self._create_output_panel() # New panel for output settings
+        self._create_output_panel()
         self._create_slice_viewer_panel()
 
         self.show()
@@ -87,14 +86,14 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
-        # --- Settings Menu ---
         settings_menu = menu_bar.addMenu("&Settings")
-        gpu_config_action = QAction("Configure GPU...", self)
-        gpu_config_action.triggered.connect(self._open_gpu_settings)
+        gpu_config_action = QAction("Configure Paths...", self)
+        gpu_config_action.triggered.connect(self._open_settings_dialog)
         settings_menu.addAction(gpu_config_action)
 
-    def _open_gpu_settings(self):
-        """Opens the GPU configuration dialog."""
+    def _open_settings_dialog(self):
+        """Opens the configuration dialog."""
+        # Renamed from GpuSettingsDialog as it now handles more
         dialog = GpuSettingsDialog(self.app_settings, self)
         dialog.exec()
 
@@ -114,24 +113,10 @@ class MainWindow(QMainWindow):
         self.left_panel_layout.addWidget(self.file_list_widget)
 
     def _create_parameter_panel(self):
-        # --- Pipeline Type Selector ---
-        pipeline_label = QLabel("Processing Engine:")
-        self.pipeline_combo = QComboBox()
-        self.pipeline_combo.addItems(["ModernGL (In-Process)", "RawGL (External)"])
-        self.left_panel_layout.addWidget(pipeline_label)
-        self.left_panel_layout.addWidget(self.pipeline_combo)
-
         self.param_panel = ParameterPanel()
         self.left_panel_layout.addWidget(self.param_panel)
 
-        # Connect the pipeline selector to the parameter panel
-        self.pipeline_combo.currentTextChanged.connect(self.param_panel.set_pipeline_mode)
-        # Initialize the panel with the default mode
-        self.param_panel.set_pipeline_mode(self.pipeline_combo.currentText())
-
-
     def _create_output_panel(self):
-        """Creates the panel for output settings."""
         output_frame = QFrame()
         output_frame.setFrameShape(QFrame.Shape.StyledPanel)
         output_layout = QVBoxLayout(output_frame)
@@ -140,7 +125,6 @@ class MainWindow(QMainWindow):
         title_label.setStyleSheet("font-size: 14pt; font-weight: bold;")
         output_layout.addWidget(title_label)
 
-        # Output directory selection
         dir_layout = QHBoxLayout()
         self.output_dir_line_edit = QLineEdit()
         self.output_dir_line_edit.setPlaceholderText("Select Output Directory...")
@@ -151,13 +135,21 @@ class MainWindow(QMainWindow):
         dir_layout.addWidget(browse_button)
         output_layout.addLayout(dir_layout)
 
-        # Debug checkbox
-        self.debug_checkbox = QCheckBox("Save intermediate debug steps")
-        output_layout.addWidget(self.debug_checkbox)
+        # Worker thread count
+        worker_layout = QHBoxLayout()
+        worker_label = QLabel("Parallel Workers:")
+        self.worker_count_spinbox = QSpinBox()
+        self.worker_count_spinbox.setRange(1, os.cpu_count() or 32)
+        self.worker_count_spinbox.setValue(self.app_settings.get("dask_worker_count", 4))
+        self.worker_count_spinbox.valueChanged.connect(
+            lambda val: self.app_settings.set("dask_worker_count", val)
+        )
+        worker_layout.addWidget(worker_label)
+        worker_layout.addWidget(self.worker_count_spinbox)
+        output_layout.addLayout(worker_layout)
 
         self.left_panel_layout.addWidget(output_frame)
 
-        # Add the main action button here, after all other controls
         self.run_button = QPushButton("Run Processing")
         self.run_button.setFixedHeight(40)
         self.run_button.setStyleSheet("font-size: 14pt; font-weight: bold;")
@@ -172,7 +164,6 @@ class MainWindow(QMainWindow):
         dir_path = QFileDialog.getExistingDirectory(self, "Open Slice Directory", ".")
         if not dir_path: return
         try:
-            self.status_bar.showMessage(f"Scanning directory: {dir_path}...")
             self.slice_loader = SliceLoader(dir_path)
             self.file_list_widget.clear()
             self.slice_viewer.set_image(None)
@@ -187,7 +178,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Error: {e}")
             self.slice_loader = None
 
-    def display_selected_slice(self, current: QListWidgetItem, previous: QListWidgetItem):
+    def display_selected_slice(self, current, previous):
         if current is None or self.slice_loader is None: return
         try:
             image_array = cv2.imread(str(self.slice_loader.directory / current.text()), cv2.IMREAD_GRAYSCALE)
@@ -196,15 +187,14 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Error displaying slice: {e}")
 
     def select_output_directory(self):
-        """Opens a dialog to select the output directory."""
         dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory", ".")
         if dir_path:
             self.output_dir_line_edit.setText(dir_path)
 
     def save_config(self):
         config = self.param_panel.get_config()
-        if not config["steps"]:
-            QMessageBox.warning(self, "Warning", "Pipeline is empty. Nothing to save.")
+        if not config.get("shader_path"):
+            QMessageBox.warning(self, "Warning", "Pipeline is not configured. Please select a shader.")
             return
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Configuration", "", "JSON Files (*.json)")
         if not file_path: return
@@ -225,7 +215,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{e}")
 
     def run_processing(self):
-        # --- Validation ---
         if self.slice_loader is None or len(self.slice_loader) == 0:
             QMessageBox.warning(self, "Warning", "Please load a slice directory first.")
             return
@@ -234,41 +223,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please select an output directory.")
             return
         config = self.param_panel.get_config()
-        pipeline_mode = self.pipeline_combo.currentText()
-
-        # --- Pipeline-aware validation ---
-        is_config_valid = False
-        if "ModernGL" in pipeline_mode:
-            if config.get("steps"):
-                is_config_valid = True
-        elif "RawGL" in pipeline_mode:
-            if config.get("shader_path"):
-                is_config_valid = True
-
-        if not is_config_valid:
-            QMessageBox.warning(self, "Warning", "The processing pipeline is not configured. Please add a shader or step.")
+        if not config.get("shader_path"):
+            QMessageBox.warning(self, "Warning", "The processing pipeline is not configured. Please select a shader.")
             return
 
         self.set_ui_enabled(False)
         self.progress_bar.setValue(0)
         self.progress_bar.show()
 
-        save_debug = self.debug_checkbox.isChecked()
-
-        pipeline_mode = self.pipeline_combo.currentText()
-
-        # The processing thread needs to know which pipeline to run.
-        # This will require a larger refactor of ProcessingThread in the next phase.
-        # For now, we'll pass the mode as a string.
-        config["pipeline_mode"] = pipeline_mode
+        config["dask_worker_count"] = self.worker_count_spinbox.value()
 
         self.processing_thread = ProcessingThread(
             slice_loader=self.slice_loader,
             config=config,
             output_path=output_path,
-            app_settings=self.app_settings,
-            save_debug=save_debug,
-            window_size=5 # This should be made configurable in the UI
+            app_settings=self.app_settings
         )
         self.processing_thread.progress_update.connect(self.update_progress)
         self.processing_thread.finished.connect(self.on_processing_finished)
@@ -276,12 +245,12 @@ class MainWindow(QMainWindow):
         self.processing_thread.start()
 
     def update_progress(self, value, total):
-        self.status_bar.showMessage(f"Processing window {value} of {total}...")
+        self.status_bar.showMessage(f"Processing slice {value} of {total}...")
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(value)
 
     def on_processing_finished(self):
-        self.status_bar.showMessage("Processing complete. Files saved to output directory.")
+        self.status_bar.showMessage("Processing complete.")
         self.set_ui_enabled(True)
         self.progress_bar.hide()
         QMessageBox.information(self, "Success", "Processing finished successfully.")
@@ -290,7 +259,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"An error occurred: {message}")
         self.set_ui_enabled(True)
         self.progress_bar.hide()
-        QMessageBox.critical(self, "Error", f"An error occurred during processing:\n\n{message}")
+        QMessageBox.critical(self, "Processing Error", f"An error occurred during processing:\n\n{message}")
 
     def set_ui_enabled(self, enabled: bool):
         self.left_panel_widget.setEnabled(enabled)

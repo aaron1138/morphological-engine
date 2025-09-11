@@ -2,9 +2,7 @@
 pyside6
 numpy
 opencv-python
-moderngl
-numba
-pyopenvdb
+dask[complete]
 
 # Testing Dependencies
 pytest
