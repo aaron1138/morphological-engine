@@ -14,7 +14,8 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QListWidget, QPushButton, QFrame, QLabel, QStatusBar, QFileDialog,
-    QListWidgetItem, QProgressBar, QMessageBox, QLineEdit, QCheckBox
+    QListWidgetItem, QProgressBar, QMessageBox, QLineEdit, QCheckBox,
+    QTabWidget
 )
 from PyQt6.QtGui import QAction, QIcon
 
@@ -27,6 +28,8 @@ import moderngl
 from gui.parameter_panel import ParameterPanel
 from gui.slice_viewer import SliceViewer
 from gui.processing_thread import ProcessingThread
+from gui.rawgl_panel import RawGLPanel
+from gui.rawgl_thread import RawGLThread
 
 # --- Utility Imports ---
 from utils import config_manager
@@ -43,10 +46,30 @@ class MainWindow(QMainWindow):
 
         self.slice_loader: SliceLoader | None = None
         self.processing_thread: ProcessingThread | None = None
+        self.rawgl_thread: RawGLThread | None = None
 
-        self.central_widget = QWidget()
-        self.setCentralWidget(self.central_widget)
-        self.main_layout = QHBoxLayout(self.central_widget)
+        # --- Create Tabbed Interface ---
+        self.tabs = QTabWidget()
+        self.setCentralWidget(self.tabs)
+
+        # --- Create Morphological Processor Tab ---
+        self.morph_tab = QWidget()
+        self.tabs.addTab(self.morph_tab, "Morphological Processor")
+        self._create_morph_processor_tab_ui()
+
+        # --- Create RawGL Pipeline Tab ---
+        self.rawgl_tab = QWidget()
+        self.tabs.addTab(self.rawgl_tab, "RawGL Pipeline")
+        self._create_rawgl_pipeline_tab_ui()
+
+        self._create_menu_bar()
+        self._create_status_bar()
+
+        self.show()
+
+    def _create_morph_processor_tab_ui(self):
+        """Creates the UI for the morphological processor tab."""
+        self.main_layout = QHBoxLayout(self.morph_tab) # Layout for the first tab
         self.left_panel_layout = QVBoxLayout()
         self.left_panel_widget = QWidget()
         self.left_panel_widget.setLayout(self.left_panel_layout)
@@ -57,14 +80,137 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.left_panel_widget, 1)
         self.main_layout.addWidget(self.right_panel_widget, 3)
 
-        self._create_menu_bar()
-        self._create_status_bar()
+        # These methods now populate the layouts within the tab
         self._create_file_management_panel()
         self._create_parameter_panel()
-        self._create_output_panel() # New panel for output settings
+        self._create_output_panel()
         self._create_slice_viewer_panel()
 
-        self.show()
+    def _create_rawgl_pipeline_tab_ui(self):
+        """Creates the UI for the RawGL pipeline tab."""
+        self.rawgl_main_layout = QHBoxLayout(self.rawgl_tab)
+
+        # --- Left Panel (Pipeline List) ---
+        rawgl_left_panel = QWidget()
+        rawgl_left_layout = QVBoxLayout(rawgl_left_panel)
+        rawgl_left_panel.setMaximumWidth(300)
+
+        rawgl_left_layout.addWidget(QLabel("Shader Pass Pipeline:"))
+        self.rawgl_pipeline_list = QListWidget()
+        self.rawgl_pipeline_list.currentItemChanged.connect(self.on_rawgl_pass_selected)
+        rawgl_left_layout.addWidget(self.rawgl_pipeline_list)
+
+        # Buttons for pipeline management
+        rawgl_button_layout = QHBoxLayout()
+        add_button = QPushButton("Add Pass")
+        add_button.clicked.connect(self.add_rawgl_pass)
+        remove_button = QPushButton("Remove Pass")
+        remove_button.clicked.connect(self.remove_rawgl_pass)
+        rawgl_button_layout.addWidget(add_button)
+        rawgl_button_layout.addWidget(remove_button)
+        rawgl_left_layout.addLayout(rawgl_button_layout)
+
+        # Main run button
+        self.run_rawgl_button = QPushButton("Run RawGL Pipeline")
+        self.run_rawgl_button.setFixedHeight(40)
+        self.run_rawgl_button.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        self.run_rawgl_button.clicked.connect(self.run_rawgl_pipeline)
+        rawgl_left_layout.addWidget(self.run_rawgl_button)
+
+        # --- Right Panel (Configuration) ---
+        self.rawgl_config_panel = RawGLPanel()
+
+        self.rawgl_main_layout.addWidget(rawgl_left_panel, 1)
+        self.rawgl_main_layout.addWidget(self.rawgl_config_panel, 3)
+
+        # --- Data storage for pipeline ---
+        self.rawgl_pipeline_data = [] # List of config dicts
+
+    def add_rawgl_pass(self):
+        # Add a new pass with a default name
+        pass_count = self.rawgl_pipeline_list.count()
+        item = QListWidgetItem(f"Pass {pass_count + 1}")
+        self.rawgl_pipeline_list.addItem(item)
+
+        # Create a default config for this new pass
+        default_config = {
+            "pass_vertfrag": "",
+            "pass_size": "512 512",
+            "in": "",
+            "out": "",
+            "out_channels": 1,
+            "out_bits": 8,
+            "out_format": "r8"
+        }
+        self.rawgl_pipeline_data.append(default_config)
+        self.rawgl_pipeline_list.setCurrentItem(item)
+
+    def remove_rawgl_pass(self):
+        current_row = self.rawgl_pipeline_list.currentRow()
+        if current_row > -1:
+            self.rawgl_pipeline_list.takeItem(current_row)
+            del self.rawgl_pipeline_data[current_row]
+
+    def on_rawgl_pass_selected(self, current, previous):
+        # First, save the config from the previously selected item
+        if previous:
+            prev_row = self.rawgl_pipeline_list.row(previous)
+            if prev_row > -1 and prev_row < len(self.rawgl_pipeline_data):
+                try:
+                    _, config = self.rawgl_config_panel.get_config()
+                    self.rawgl_pipeline_data[prev_row] = config
+                except ValueError: # Can happen if exec path is cleared
+                    pass
+
+        # Now, load the config for the newly selected item
+        if current:
+            current_row = self.rawgl_pipeline_list.row(current)
+            if current_row > -1 and current_row < len(self.rawgl_pipeline_data):
+                config = self.rawgl_pipeline_data[current_row]
+                self.rawgl_config_panel.set_config(config)
+
+    def run_rawgl_pipeline(self):
+        """Initiates the RawGL pipeline processing in a background thread."""
+        # --- Validation ---
+        try:
+            exec_path, _ = self.rawgl_config_panel.get_config()
+        except ValueError as e:
+            QMessageBox.warning(self, "Warning", str(e))
+            return
+
+        if not self.rawgl_pipeline_data:
+            QMessageBox.warning(self, "Warning", "The RawGL pipeline is empty. Please add at least one pass.")
+            return
+
+        self.set_ui_enabled(False)
+        self.progress_bar.setValue(0)
+        self.progress_bar.show()
+
+        self.rawgl_thread = RawGLThread(
+            rawgl_exec_path=exec_path,
+            pipeline_configs=self.rawgl_pipeline_data
+        )
+        self.rawgl_thread.progress_update.connect(self.on_rawgl_progress)
+        self.rawgl_thread.finished.connect(self.on_rawgl_finished)
+        self.rawgl_thread.error.connect(self.on_rawgl_error)
+        self.rawgl_thread.start()
+
+    def on_rawgl_progress(self, value, total):
+        self.status_bar.showMessage(f"Executing RawGL pass {value} of {total}...")
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(value)
+
+    def on_rawgl_finished(self):
+        self.status_bar.showMessage("RawGL pipeline finished successfully.")
+        self.set_ui_enabled(True)
+        self.progress_bar.hide()
+        QMessageBox.information(self, "Success", "RawGL pipeline finished successfully.")
+
+    def on_rawgl_error(self, message: str):
+        self.status_bar.showMessage(f"An error occurred in the RawGL pipeline.")
+        self.set_ui_enabled(True)
+        self.progress_bar.hide()
+        QMessageBox.critical(self, "RawGL Pipeline Error", f"An error occurred:\n\n{message}")
 
     def _create_menu_bar(self):
         menu_bar = self.menuBar()
@@ -253,7 +399,9 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Processing Error", f"An error occurred during processing:\n\n{message}")
 
     def set_ui_enabled(self, enabled: bool):
-        self.left_panel_widget.setEnabled(enabled)
+        # Also disable/enable tabs to prevent switching during processing
+        for i in range(self.tabs.count()):
+            self.tabs.widget(i).setEnabled(enabled)
         self.menuBar().setEnabled(enabled)
 
     def run_gpu_test(self):
