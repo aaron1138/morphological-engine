@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 import sys
 import os
 from pathlib import Path
@@ -7,83 +7,68 @@ from pathlib import Path
 # Make the src directory available for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.processing.rawgl_controller import RawGLWorker
+from src.processing.rawgl_controller import RawGLDaskWorker
 
-class TestRawGLController(unittest.TestCase):
+class MockDaskGrid:
+    """A mock DaskGrid for testing the controller."""
+    def __init__(self, shape=(10, 100, 100)):
+        self.shape = shape
 
-    @patch('src.processing.rawgl_controller.subprocess.run')
-    def test_command_generation_simple(self, mock_subprocess_run):
-        """Tests that a simple, single-step pipeline generates the correct command."""
-        mock_subprocess_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+    def get_slice(self, plane, index):
+        # This doesn't need to return a real Dask array for this test
+        return f"slice_{plane}_{index}"
 
-        pipeline = [
-            {
-                'pass_comp': 'shader.comp',
-                'in': {'Texture0': 'input.png'},
-                'out': {'OutColor': 'output.png'},
-                'out_format': 'r8',
-                'out_channels': 1,
-                'out_bits': 8
-            }
-        ]
+class TestRawGLDaskController(unittest.TestCase):
 
-        worker = RawGLWorker(pipeline, rawgl_executable="rawgl_test")
-        worker.run()
+    @patch('src.processing.rawgl_controller.dask.compute', return_value=([],))
+    @patch('src.processing.rawgl_controller.process_slice_with_rawgl')
+    @patch('src.processing.rawgl_controller.Client', MagicMock())
+    @patch('src.processing.rawgl_controller.LocalCluster', MagicMock())
+    def test_dask_worker_orchestration(self, mock_process_function, mock_compute):
+        """
+        Tests that the worker calls the processing function with the correct arguments
+        for each slice in the specified range.
+        """
+        # --- Test Data ---
+        mock_grid = MockDaskGrid(shape=(10, 100, 100))
+        config = {
+            'num_workers': 2,
+            'plane': 'YZ',
+            'slice_range': (2, 5), # Process slices 2, 3, 4 (3 total)
+            'shader_pass': {'pass_comp': 'test.comp'},
+            'rawgl_executable': 'rawgl_test'
+        }
 
-        expected_command = [
-            "rawgl_test",
-            "--pass_comp", "shader.comp",
-            "--in", "Texture0", "input.png",
-            "--out", "OutColor", "output.png",
-            "--out_format", "r8",
-            "--out_channels", "1",
-            "--out_bits", "8"
-        ]
+        # --- Execution ---
+        # The dask.delayed wrapper is transparent here since we mock the target function
+        # We use a side_effect to replace the dask.delayed decorator with a function
+        # that simply returns the function it's wrapping. This means when the code
+        # calls the 'delayed' function, it's actually calling our mock of
+        # process_slice_with_rawgl directly.
+        with patch('src.processing.rawgl_controller.dask.delayed', side_effect=lambda x: x):
+             worker = RawGLDaskWorker(mock_grid, config)
+             worker.run()
 
-        mock_subprocess_run.assert_called_once_with(
-            expected_command,
-            capture_output=True, text=True, check=True
-        )
+        # --- Assertions ---
+        # 1. Was the processing function called for each slice in the range?
+        self.assertEqual(mock_process_function.call_count, 3)
 
-    @patch('src.processing.rawgl_controller.subprocess.run')
-    def test_temp_file_chaining(self, mock_subprocess_run):
-        """Tests that intermediate temp files are correctly chained between passes."""
-        mock_subprocess_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        # 2. Check the arguments of the first call
+        first_call_args = mock_process_function.call_args_list[0].args
+        self.assertEqual(first_call_args[0], mock_grid)             # dask_grid
+        self.assertEqual(first_call_args[1], 'YZ')                  # plane
+        self.assertEqual(first_call_args[2], 2)                      # slice_index
+        self.assertEqual(first_call_args[3], config['shader_pass'])  # shader_pass
+        self.assertEqual(first_call_args[4], 'rawgl_test')           # rawgl_executable
+        self.assertIsInstance(first_call_args[5], Path)              # output_dir (Path object)
 
-        pipeline = [
-            { # Step 0: Input -> Temp
-                'pass_comp': 'step1.comp',
-                'in': {'Texture0': 'input.png'},
-                'out': {'OutColor': 'TEMP'}
-            },
-            { # Step 1: Temp -> Output
-                'pass_comp': 'step2.comp',
-                'in': {'Texture0': (0, 'OutColor')}, # Reference output from step 0
-                'out': {'FinalImage': 'final.png'}
-            }
-        ]
+        # 3. Check the slice index for the last call
+        last_call_args = mock_process_function.call_args_list[2].args
+        self.assertEqual(last_call_args[2], 4) # slice_range is exclusive (2, 3, 4)
 
-        worker = RawGLWorker(pipeline)
-        worker.run()
-
-        self.assertEqual(mock_subprocess_run.call_count, 2)
-
-        # Check the first call (writes to a temp file)
-        first_call_args = mock_subprocess_run.call_args_list[0].args[0]
-        self.assertEqual(first_call_args[0:8], ['rawgl', '--pass_comp', 'step1.comp', '--in', 'Texture0', 'input.png', '--out', 'OutColor'])
-        temp_output_path = Path(first_call_args[8]) # The path of the temp output file
-        self.assertTrue(temp_output_path.name.startswith("step_0_OutColor"))
-        self.assertTrue(temp_output_path.name.endswith(".png"))
-
-        # Check the second call (reads from the temp file)
-        second_call_args = mock_subprocess_run.call_args_list[1].args[0]
-        # Expected: rawgl --pass_comp step2.comp --in Texture0 /path/to/temp --out FinalImage final.png
-        self.assertEqual(second_call_args[6], '--out')
-        self.assertEqual(second_call_args[7], 'FinalImage')
-        self.assertEqual(second_call_args[8], 'final.png')
-
-        input_to_second_step = second_call_args[5]
-        self.assertEqual(input_to_second_step, str(temp_output_path))
+        # 4. Check that dask.compute was called.
+        # The *tasks syntax means we can't easily inspect the list, but we can ensure it was called.
+        mock_compute.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

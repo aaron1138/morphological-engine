@@ -1,16 +1,20 @@
 # Core Python dependencies for the Voxel Slice Pre-Processor project.
-# Note: OpenVDB and NanoVDB require separate, manual installation steps.
-# See SETUP.md for detailed instructions.
 
 # GUI Framework
 PySide6
 
-# GPU Compute & Rendering
+# GPU Compute & Rendering (External via RawGL)
+# ModernGL and moderngl-window are kept for potential future in-process GPU work.
 ModernGL
 moderngl-window
-numpy
 
-# CPU Acceleration
+# Data Handling and Parallelism
+dask[complete]
+dask-image
+imageio
+scikit-image
+
+# CPU Acceleration (if needed)
 numba
 
 # Testing Framework

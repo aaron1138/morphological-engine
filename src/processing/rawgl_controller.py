@@ -1,163 +1,154 @@
 import subprocess
-import sys
 import tempfile
+import imageio
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, Any
 
+import dask
+from dask.distributed import Client, LocalCluster
 from PySide6.QtCore import QObject, QThread, Signal
 
-class RawGLWorker(QObject):
-    """
-    Worker object that runs the RawGL processing pipeline in a separate thread.
-    """
-    finished = Signal(bool, str)  # Emits success (bool) and final message (str)
-    progress_update = Signal(int, int)  # Emits current step and total steps
-    log_message = Signal(str)  # Emits a log message for each step
+from src.core.dask_grid import DaskGrid
 
-    def __init__(self, pipeline: List[Dict[str, Any]], rawgl_executable: str = "rawgl"):
+def process_slice_with_rawgl(
+    dask_grid: DaskGrid,
+    plane: str,
+    slice_index: int,
+    shader_pass: Dict[str, Any],
+    rawgl_executable: str,
+    output_dir: Path
+) -> str:
+    """
+    A function designed to be run by a Dask worker.
+    It extracts one slice, saves it, runs RawGL, and returns the output path.
+    """
+    # 1. Get the slice and compute it into a numpy array
+    slice_array = dask_grid.get_slice(plane, slice_index).compute()
+
+    # 2. Save the slice to a temporary input file for RawGL
+    temp_input_path = output_dir / f"input_{plane}_{slice_index}.png"
+    imageio.imwrite(temp_input_path, slice_array)
+
+    # 3. Prepare the RawGL command
+    # Use a copy of the shader pass to avoid modifying the original dict
+    pass_config = shader_pass.copy()
+    pass_config['in'] = {'Texture0': str(temp_input_path)}
+
+    # Define the final output path for this slice
+    final_output_path = output_dir / f"output_{plane}_{slice_index}.png"
+    pass_config['out'] = {'OutColor': str(final_output_path)}
+
+    # Build command
+    command = [rawgl_executable]
+    for key, value in pass_config.items():
+        arg_key = f"--{key}"
+        if isinstance(value, dict):
+            for sub_key, sub_val in value.items():
+                command.extend([arg_key, sub_key, str(sub_val)])
+        else:
+            command.extend([arg_key, str(value)])
+
+    # 4. Run the RawGL subprocess
+    subprocess.run(command, capture_output=True, text=True, check=True)
+
+    # 5. Return the path to the final output file
+    return str(final_output_path)
+
+
+class RawGLDaskWorker(QObject):
+    """
+    Worker object that uses a Dask client to run the processing pipeline.
+    """
+    finished = Signal(bool, str)
+    progress_update = Signal(int, int) # current slice, total slices
+    log_message = Signal(str)
+
+    def __init__(self, dask_grid: DaskGrid, config: Dict[str, Any]):
         super().__init__()
-        self.pipeline = pipeline
-        self.rawgl_executable = rawgl_executable
+        self.dask_grid = dask_grid
+        self.config = config
         self.is_running = True
 
     def run(self):
         """
-        Executes the entire RawGL pipeline.
+        Sets up a Dask client and executes the processing graph.
         """
-        total_steps = len(self.pipeline)
-        self.log_message.emit(f"Starting RawGL pipeline with {total_steps} steps...")
+        try:
+            num_workers = self.config.get('num_workers', 1)
+            plane = self.config.get('plane', 'XY')
+            slice_range = self.config.get('slice_range', (0, self.dask_grid.shape[0]))
+            shader_pass = self.config.get('shader_pass', {})
+            rawgl_exec = self.config.get('rawgl_executable', 'rawgl')
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
+            self.log_message.emit(f"Setting up Dask cluster with {num_workers} workers.")
+            # Using a LocalCluster is safer for threads and subprocesses
+            with LocalCluster(n_workers=num_workers, threads_per_worker=1) as cluster, Client(cluster) as client:
+                self.log_message.emit(f"Dask dashboard available at: {client.dashboard_link}")
 
-            # This mapping stores the output path of a pass's output uniform
-            # so it can be used as an input in a subsequent pass.
-            # Key: (pass_index, uniform_name), Value: file_path
-            output_map = {}
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
 
-            for i, step_config in enumerate(self.pipeline):
-                if not self.is_running:
-                    self.log_message.emit("Pipeline execution cancelled.")
-                    self.finished.emit(False, "Pipeline cancelled by user.")
-                    return
+                    tasks = []
+                    for i in range(slice_range[0], slice_range[1]):
+                        if not self.is_running:
+                            self.finished.emit(False, "Pipeline cancelled.")
+                            return
 
-                self.progress_update.emit(i + 1, total_steps)
-                self.log_message.emit(f"--- Step {i+1}/{total_steps} ---")
+                        # Create a delayed task for each slice
+                        task = dask.delayed(process_slice_with_rawgl)(
+                            self.dask_grid, plane, i, shader_pass, rawgl_exec, temp_path
+                        )
+                        tasks.append(task)
 
-                try:
-                    # Resolve inputs from previous steps
-                    step_config = self._resolve_inputs(step_config, output_map)
+                    total_slices = len(tasks)
+                    self.log_message.emit(f"Computing {total_slices} slices across plane {plane}...")
 
-                    # Prepare outputs for this step
-                    step_config, output_paths = self._prepare_outputs(step_config, temp_path, i)
+                    # Use dask.compute to execute the entire graph.
+                    # This is simpler than as_completed for batch jobs.
+                    # Progress can be inferred from the number of completed tasks.
+                    self.log_message.emit(f"Computing {len(tasks)} tasks...")
+                    results = dask.compute(*tasks)
 
-                    # Build and run the command
-                    command = self._build_command(step_config)
-                    self.log_message.emit(f"Executing command: {' '.join(command)}")
+                    # For now, we signal progress at the end.
+                    # A more advanced version could use Dask's event callbacks.
+                    for i, result_path in enumerate(results):
+                         self.log_message.emit(f"Completed task. Output at: {result_path}")
+                         self.progress_update.emit(i + 1, len(tasks))
 
-                    result = subprocess.run(command, capture_output=True, text=True, check=True)
-                    self.log_message.emit(f"RawGL stdout:\n{result.stdout}")
-                    if result.stderr:
-                        self.log_message.emit(f"RawGL stderr:\n{result.stderr}")
+        except Exception as e:
+            error_message = f"An error occurred in the Dask pipeline: {e}"
+            self.log_message.emit(error_message)
+            self.finished.emit(False, error_message)
+            return
 
-                    # Update the output map for the next iteration
-                    for uniform_name, path in output_paths.items():
-                        output_map[(i, uniform_name)] = path
-
-                except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
-                    error_message = f"Error at step {i+1}: {e}"
-                    if isinstance(e, subprocess.CalledProcessError):
-                        error_message += f"\nRawGL stderr:\n{e.stderr}"
-                    self.log_message.emit(error_message)
-                    self.finished.emit(False, error_message)
-                    return
-
-        self.log_message.emit("--- Pipeline finished successfully ---")
-        self.finished.emit(True, "Pipeline completed successfully.")
-
-    def _resolve_inputs(self, config: Dict, output_map: Dict) -> Dict:
-        """Resolves input paths that reference outputs of previous passes."""
-        if 'in' in config and isinstance(config['in'], dict):
-            for uniform, value in config['in'].items():
-                # Input format is (pass_index, uniform_name) tuple
-                if isinstance(value, tuple) and len(value) == 2:
-                    if value in output_map:
-                        config['in'][uniform] = str(output_map[value])
-                    else:
-                        raise ValueError(f"Could not resolve input for '{uniform}': Output from pass {value[0]} ('{value[1]}') not found.")
-        return config
-
-    def _prepare_outputs(self, config: Dict, temp_path: Path, step_index: int) -> (Dict, Dict):
-        """Prepares output paths, using temp files for intermediate steps."""
-        output_paths = {}
-        if 'out' in config and isinstance(config['out'], dict):
-            for uniform, value in config['out'].items():
-                if value == 'TEMP':
-                    # Create a temporary path for this intermediate output
-                    temp_file = temp_path / f"step_{step_index}_{uniform}.png"
-                    config['out'][uniform] = str(temp_file)
-                    output_paths[uniform] = temp_file
-                else:
-                    # This is a final, user-specified output
-                    final_path = Path(value)
-                    final_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_paths[uniform] = final_path
-        return config, output_paths
-
-    def _build_command(self, config: Dict) -> List[str]:
-        """Constructs the command list from a step configuration dictionary."""
-        command = [self.rawgl_executable]
-        for key, value in config.items():
-            if value is None: continue
-
-            arg_key = f"--{key}"
-            if isinstance(value, list):
-                command.append(arg_key)
-                command.extend(map(str, value))
-            elif isinstance(value, dict):
-                # For dicts like --in and --out
-                for sub_key, sub_val in value.items():
-                    command.append(arg_key)
-                    command.append(sub_key)
-                    command.append(str(sub_val))
-            else:
-                command.append(arg_key)
-                command.append(str(value))
-        return command
+        self.finished.emit(True, "Dask pipeline completed successfully.")
 
     def stop(self):
         self.is_running = False
 
 class RawGLController(QObject):
     """
-    Controller to manage the RawGL processing thread.
+    Controller to manage the Dask-based RawGL processing thread.
     """
-    # Expose signals from the worker
     finished = Signal(bool, str)
     progress_update = Signal(int, int)
     log_message = Signal(str)
 
-    def __init__(self, pipeline: List[Dict[str, Any]], rawgl_executable: str = "rawgl"):
+    def __init__(self, dask_grid: DaskGrid, config: Dict[str, Any]):
         super().__init__()
-        self._pipeline = pipeline
-        self._rawgl_executable = rawgl_executable
-
+        self._dask_grid = dask_grid
+        self._config = config
         self._thread = None
         self._worker = None
 
     def run(self):
-        """
-        Starts the pipeline execution in a background thread.
-        """
         if self._thread and self._thread.isRunning():
-            print("Warning: Pipeline is already running.")
             return
 
         self._thread = QThread()
-        self._worker = RawGLWorker(self._pipeline, self._rawgl_executable)
+        self._worker = RawGLDaskWorker(self._dask_grid, self._config)
         self._worker.moveToThread(self._thread)
 
-        # Connect signals
         self._worker.finished.connect(self.finished)
         self._worker.progress_update.connect(self.progress_update)
         self._worker.log_message.connect(self.log_message)
@@ -170,6 +161,5 @@ class RawGLController(QObject):
         self._thread.start()
 
     def stop(self):
-        """Stops the currently running pipeline."""
         if self._worker:
             self._worker.stop()

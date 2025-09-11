@@ -1,4 +1,5 @@
 import sys
+import os
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
     QHBoxLayout, QVBoxLayout, QLabel, QFrame,
@@ -51,49 +52,76 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         right_widget.setMinimumWidth(500)
 
-        # Import and add the pipeline panel
-        from .rawgl_pipeline_panel import RawGLPipelinePanel
-        self.pipeline_panel = RawGLPipelinePanel()
-        right_layout.addWidget(self.pipeline_panel)
+        # Import and add the settings panel
+        from .rawgl_pipeline_panel import RawGLSettingsPanel
+        from src.core.dask_grid import DaskGrid
+        from PySide6.QtWidgets import QSpinBox, QFileDialog, QHBoxLayout, QLabel
 
-        # Add a "Run" button
-        self.run_button = QPushButton("Run Processing Pipeline")
+        self.settings_panel = RawGLSettingsPanel()
+        right_layout.addWidget(self.settings_panel)
+
+        # Add Thread Count and Run Button
+        controls_layout = QHBoxLayout()
+        controls_layout.addWidget(QLabel("Dask Workers (Threads):"))
+        self.thread_count_spin = QSpinBox()
+        self.thread_count_spin.setRange(1, os.cpu_count() or 1)
+        self.thread_count_spin.setValue(os.cpu_count() or 1)
+        controls_layout.addWidget(self.thread_count_spin)
+        controls_layout.addStretch()
+        self.run_button = QPushButton("Run Processing")
         self.run_button.setFixedHeight(40)
-        self.run_button.clicked.connect(self._run_rawgl_pipeline)
-        right_layout.addWidget(self.run_button)
+        self.run_button.clicked.connect(self._run_dask_pipeline)
+        controls_layout.addWidget(self.run_button)
+        right_layout.addLayout(controls_layout)
 
         main_layout.addWidget(right_widget)
 
         self._create_menu_bar()
         self._create_status_bar()
 
-        # To hold the controller instance while it's running
-        self.rawgl_controller = None
+        # To hold the controller and grid instances
+        self.dask_grid = None
+        self.dask_controller = None
 
         print("Main window scaffold created and RawGL panel integrated.")
 
-    def _run_rawgl_pipeline(self):
-        """Initiates the RawGL processing pipeline."""
-        pipeline_def = self.pipeline_panel.get_pipeline()
-        if not pipeline_def:
-            print("Pipeline is empty. Nothing to run.")
+    def _load_image_stack(self):
+        """Opens a dialog to select a directory of images and loads it into a DaskGrid."""
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Image Stack Directory", ".")
+        if not dir_path:
             return
 
-        # Assuming 'rawgl' is in the system PATH or in the same directory
-        # In a real app, this path would be configurable.
-        rawgl_executable = "rawgl"
+        try:
+            self.statusBar().showMessage(f"Loading image stack from: {dir_path}...")
+            self.dask_grid = DaskGrid(dir_path)
+            self.statusBar().showMessage(f"Loaded grid with shape: {self.dask_grid.shape}")
+            # Update slice range spinners
+            self.settings_panel.end_slice_spin.setValue(self.dask_grid.shape[0])
+        except (NotADirectoryError, FileNotFoundError) as e:
+            self.statusBar().showMessage(f"Error: {e}", 5000)
+            self.dask_grid = None
+
+    def _run_dask_pipeline(self):
+        """Initiates the Dask-based RawGL processing pipeline."""
+        if self.dask_grid is None:
+            self.statusBar().showMessage("Please load an image stack first.", 5000)
+            return
+
+        job_config = self.settings_panel.get_processing_config()
+        job_config['num_workers'] = self.thread_count_spin.value()
+        job_config['rawgl_executable'] = 'rawgl' # Should be configurable in a real app
 
         from src.processing.rawgl_controller import RawGLController
-        self.rawgl_controller = RawGLController(pipeline_def, rawgl_executable)
+        self.dask_controller = RawGLController(self.dask_grid, job_config)
 
         # Connect signals to handlers
-        self.rawgl_controller.progress_update.connect(self._handle_pipeline_progress)
-        self.rawgl_controller.log_message.connect(self._handle_pipeline_log)
-        self.rawgl_controller.finished.connect(self._handle_pipeline_finished)
+        self.dask_controller.progress_update.connect(self._handle_pipeline_progress)
+        self.dask_controller.log_message.connect(self._handle_pipeline_log)
+        self.dask_controller.finished.connect(self._handle_pipeline_finished)
 
-        self.rawgl_controller.run()
+        self.dask_controller.run()
         # Disable the run button while processing
-        self.sender().setEnabled(False)
+        self.run_button.setEnabled(False)
 
     def _handle_pipeline_progress(self, step, total):
         """Updates the status bar with the current progress."""
@@ -119,12 +147,12 @@ class MainWindow(QMainWindow):
 
         # File Menu
         file_menu = menu_bar.addMenu("&File")
-        open_action = QAction("Open...", self)
-        save_action = QAction("Save As...", self)
+        open_action = QAction("Load Image Stack...", self)
+        open_action.triggered.connect(self._load_image_stack)
+        file_menu.addAction(open_action)
+        file_menu.addSeparator()
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(self.close)
-        file_menu.addAction(open_action)
-        file_menu.addAction(save_action)
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
 
