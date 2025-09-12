@@ -5,3 +5,4 @@ imageio
 numba
 scikit-image
 opencv-python
+matplotlib
