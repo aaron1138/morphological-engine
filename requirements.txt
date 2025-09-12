@@ -1,0 +1,7 @@
+PySide6
+dask[complete]
+numpy
+imageio
+numba
+scikit-image
+imageio-ffmpeg
