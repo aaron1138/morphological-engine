@@ -1,0 +1,6 @@
+pyside6
+numpy
+dask[complete]
+numba
+imageio
+scikit-image

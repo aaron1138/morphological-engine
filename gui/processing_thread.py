@@ -1,92 +1,115 @@
-# -*- coding: utf-8 -*-
-"""
-Module: processing_thread.py
-Author: Gemini
-Description: A QThread subclass for running the core processing engine in the
-             background to prevent the GUI from freezing.
-"""
+import traceback
+import shutil
+from PySide6.QtCore import QThread, Signal
 
-import cv2
-import numpy as np
-from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal
-from typing import Dict, Any
-
-# --- Core Engine Imports ---
-from core.slice_loader import SliceLoader
-from core.voxel_engine import VoxelEngine
-from core.processing_pipeline import ProcessingPipeline
+from utils.config import Config
+from utils import uvtools
+from core import dask_engine
 
 class ProcessingThread(QThread):
     """
-    Runs the full voxel processing pipeline in a separate thread and saves results.
+    Manages the Dask processing pipeline in a separate thread to keep the GUI responsive.
     """
-    progress_update = pyqtSignal(int, int)
-    # Finished signal no longer needs to carry data, just indicates completion.
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+    # Signal to update the status label in the main window
+    status_update = Signal(str)
+    # Signal to update the progress bar (current_value, max_value)
+    progress_update = Signal(int, int)
+    # Signal to report a processing error
+    error_signal = Signal(str)
+    # Signal indicating the thread has finished its work
+    finished_signal = Signal()
 
-    def __init__(self, slice_loader: SliceLoader, config: Dict[str, Any], output_path: str, save_debug: bool, window_size: int = 5):
+    def __init__(self, app_config: Config, axis_to_extract: int):
+        """
+        Args:
+            app_config: The application configuration dataclass.
+            axis_to_extract: The axis to slice along (0=XY, 1=XZ, 2=YZ).
+        """
         super().__init__()
-        self.slice_loader = slice_loader
-        self.config = config
-        self.output_path = Path(output_path)
-        self.save_debug = save_debug
-        self.window_size = window_size
-        self.center_slice_offset = self.window_size // 2
+        self.app_config = app_config
+        self.axis_to_extract = axis_to_extract
+        self._is_running = True
 
     def run(self):
-        """The main work of the thread is done here."""
+        """
+        The main processing loop executed in the background thread.
+        """
+        self.status_update.emit("Processing started...")
+        temp_extraction_folder = None
+
         try:
-            print("Processing thread started.")
-            
-            # Create output directories
-            self.output_path.mkdir(exist_ok=True)
-            debug_path = self.output_path / "debug"
-            if self.save_debug:
-                debug_path.mkdir(exist_ok=True)
+            # --- Step 1: Determine Input Folder ---
+            if self.app_config.input_mode == "uvtools":
+                self.status_update.emit("Starting UVTools slice extraction...")
+                temp_extraction_folder = uvtools.extract_layers_with_uvtools(
+                    uvtools_exe_path=self.app_config.uvtools_path,
+                    input_slice_file=self.app_config.uvtools_input_file,
+                    temp_base_folder=self.app_config.uvtools_temp_folder
+                )
+                input_path = temp_extraction_folder
+                self.status_update.emit("UVTools extraction complete.")
+            else:
+                input_path = self.app_config.input_folder
 
-            engine = VoxelEngine(self.slice_loader, self.window_size)
-            pipeline = ProcessingPipeline(self.config)
+            if not self._is_running: return
 
-            num_windows = len(self.slice_loader) - self.window_size + 1
-            all_slice_paths = self.slice_loader.get_slice_list()
+            # --- Step 2: Load Image Stack with Dask ---
+            self.status_update.emit("Loading image stack into Dask array...")
+            dask_array = dask_engine.load_image_stack(input_path)
+            self.status_update.emit("Dask array created successfully.")
 
-            for i, voxel_window in enumerate(engine.iter_windows()):
-                # Determine the original filename for the center slice of this window
-                center_slice_index_global = i + self.center_slice_offset
-                original_path = all_slice_paths[center_slice_index_global]
-                
-                # Run the pipeline to get the modifier mask and any debug steps
-                modifier_window, debug_windows = pipeline.run(voxel_window, debug=self.save_debug)
-                
-                # --- NEW: BLENDING LOGIC ---
-                # Get the original center slice from the input window
-                original_slice = voxel_window[self.center_slice_offset]
-                # Get the processed modifier mask from the pipeline's final output window
-                modifier_mask = modifier_window[self.center_slice_offset]
-                # Combine them: Add the white pixels from the mask to the original slice
-                blended_slice = np.maximum(original_slice, modifier_mask)
-                
-                # Save the final BLENDED slice
-                output_filepath = self.output_path / original_path.name
-                cv2.imwrite(str(output_filepath), blended_slice)
+            if not self._is_running: return
 
-                # Save debug images if requested (these remain un-blended)
-                if self.save_debug:
-                    for name, debug_window in debug_windows:
-                        debug_slice = debug_window[self.center_slice_offset]
-                        debug_filename = f"{original_path.stem}_{name}.png"
-                        debug_filepath = debug_path / debug_filename
-                        cv2.imwrite(str(debug_filepath), debug_slice)
+            # --- Step 3: Extract and Save Orthogonal Planes ---
+            axis_names = {0: "XY", 1: "XZ", 2: "YZ"}
+            plane_name = axis_names[self.axis_to_extract]
+            self.status_update.emit(f"Extracting {plane_name} planes...")
 
-                self.progress_update.emit(i + 1, num_windows)
+            # Create a dedicated output folder for this extraction
+            output_subfolder = f"{self.app_config.output_file_prefix}{plane_name}"
+            final_output_path = f"{self.app_config.output_folder}/{output_subfolder}"
 
-            self.finished.emit()
-            print("Processing thread finished successfully.")
+            # Define a progress callback to link Dask engine progress to the GUI
+            def progress_callback(current, total):
+                if not self._is_running:
+                    # This is a soft stop; it won't kill the current dask compute
+                    # but will prevent the next one from starting.
+                    raise InterruptedError("Processing stopped by user.")
+                self.progress_update.emit(current, total)
 
+            dask_engine.save_orthogonal_planes(
+                dask_array=dask_array,
+                output_folder=final_output_path,
+                axis=self.axis_to_extract,
+                progress_callback=progress_callback
+            )
+            self.status_update.emit(f"Successfully saved planes to: {final_output_path}")
+
+        except InterruptedError as e:
+            self.status_update.emit(str(e))
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"An error occurred in the processing thread: {e}")
-            self.error.emit(str(e))
+            # Format a detailed error message with traceback
+            error_info = f"An error occurred in the processing thread:\n\n{str(e)}\n\n{traceback.format_exc()}"
+            self.error_signal.emit(error_info)
+        finally:
+            # --- Step 4: Cleanup ---
+            if temp_extraction_folder and self.app_config.uvtools_delete_temp_on_completion:
+                self.status_update.emit(f"Deleting temporary folder: {temp_extraction_folder}")
+                try:
+                    shutil.rmtree(temp_extraction_folder)
+                    self.status_update.emit("Temporary files deleted.")
+                except Exception as e:
+                    self.error_signal.emit(f"Could not delete temp folder: {e}")
+
+            if self._is_running:
+                 self.status_update.emit("Processing complete!")
+
+            self.finished_signal.emit()
+
+    def stop(self):
+        """
+        Signals the processing thread to stop. The stop is cooperative,
+        meaning the thread will finish its current task before exiting the loop.
+        """
+        self.status_update.emit("Stopping process...")
+        self._is_running = False
