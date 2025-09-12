@@ -1,92 +1,70 @@
-# -*- coding: utf-8 -*-
-"""
-Module: processing_thread.py
-Author: Gemini
-Description: A QThread subclass for running the core processing engine in the
-             background to prevent the GUI from freezing.
-"""
-
-import cv2
-import numpy as np
-from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal
-from typing import Dict, Any
-
-# --- Core Engine Imports ---
-from core.slice_loader import SliceLoader
-from core.voxel_engine import VoxelEngine
-from core.processing_pipeline import ProcessingPipeline
+# gui/processing_thread.py
+import os
+import time
+from PySide6.QtCore import QThread, Signal
+from core.dask_engine import DaskEngine
+from utils.uvtools import UVTools
+from utils.config import Config
 
 class ProcessingThread(QThread):
-    """
-    Runs the full voxel processing pipeline in a separate thread and saves results.
-    """
-    progress_update = pyqtSignal(int, int)
-    # Finished signal no longer needs to carry data, just indicates completion.
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
+    status_update = Signal(str)
+    progress_update = Signal(int)
+    finished_signal = Signal()
+    error_signal = Signal(str)
 
-    def __init__(self, slice_loader: SliceLoader, config: Dict[str, Any], output_path: str, save_debug: bool, window_size: int = 5):
+    def __init__(self, config: Config):
         super().__init__()
-        self.slice_loader = slice_loader
         self.config = config
-        self.output_path = Path(output_path)
-        self.save_debug = save_debug
-        self.window_size = window_size
-        self.center_slice_offset = self.window_size // 2
+        self._is_running = True
 
     def run(self):
-        """The main work of the thread is done here."""
         try:
-            print("Processing thread started.")
-            
-            # Create output directories
-            self.output_path.mkdir(exist_ok=True)
-            debug_path = self.output_path / "debug"
-            if self.save_debug:
-                debug_path.mkdir(exist_ok=True)
+            self.status_update.emit("Processing started...")
 
-            engine = VoxelEngine(self.slice_loader, self.window_size)
-            pipeline = ProcessingPipeline(self.config)
+            image_paths = self.get_image_paths()
+            if not image_paths:
+                self.error_signal.emit("No image files found.")
+                return
 
-            num_windows = len(self.slice_loader) - self.window_size + 1
-            all_slice_paths = self.slice_loader.get_slice_list()
+            dask_engine = DaskEngine()
+            dask_array = dask_engine.load_images_to_dask_array(image_paths)
 
-            for i, voxel_window in enumerate(engine.iter_windows()):
-                # Determine the original filename for the center slice of this window
-                center_slice_index_global = i + self.center_slice_offset
-                original_path = all_slice_paths[center_slice_index_global]
-                
-                # Run the pipeline to get the modifier mask and any debug steps
-                modifier_window, debug_windows = pipeline.run(voxel_window, debug=self.save_debug)
-                
-                # --- NEW: BLENDING LOGIC ---
-                # Get the original center slice from the input window
-                original_slice = voxel_window[self.center_slice_offset]
-                # Get the processed modifier mask from the pipeline's final output window
-                modifier_mask = modifier_window[self.center_slice_offset]
-                # Combine them: Add the white pixels from the mask to the original slice
-                blended_slice = np.maximum(original_slice, modifier_mask)
-                
-                # Save the final BLENDED slice
-                output_filepath = self.output_path / original_path.name
-                cv2.imwrite(str(output_filepath), blended_slice)
+            self.status_update.emit("Dask array created. Shape: {}, Chunks: {}".format(dask_array.shape, dask_array.chunksize))
 
-                # Save debug images if requested (these remain un-blended)
-                if self.save_debug:
-                    for name, debug_window in debug_windows:
-                        debug_slice = debug_window[self.center_slice_offset]
-                        debug_filename = f"{original_path.stem}_{name}.png"
-                        debug_filepath = debug_path / debug_filename
-                        cv2.imwrite(str(debug_filepath), debug_slice)
+            # Placeholder for processing logic
+            # Here, we will just compute the mean of the array to trigger computation
+            self.status_update.emit("Performing placeholder computation...")
+            mean_value = dask_array.mean().compute()
+            self.status_update.emit(f"Mean value of the dask array: {mean_value}")
 
-                self.progress_update.emit(i + 1, num_windows)
+            # Simulate a longer process with progress updates
+            for i in range(101):
+                if not self._is_running:
+                    self.status_update.emit("Processing stopped by user.")
+                    break
+                time.sleep(0.05) # Simulate work
+                self.progress_update.emit(i)
 
-            self.finished.emit()
-            print("Processing thread finished successfully.")
+            if self._is_running:
+                self.status_update.emit("Processing complete!")
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"An error occurred in the processing thread: {e}")
-            self.error.emit(str(e))
+            self.error_signal.emit(str(e))
+        finally:
+            self.finished_signal.emit()
+
+    def get_image_paths(self):
+        if self.config.input_mode == "uvtools":
+            self.status_update.emit("Using UVTools to extract images...")
+            uvtools = UVTools(self.config.uvtools_path)
+            temp_folder = os.path.join(self.config.uvtools_temp_folder, "extracted_images")
+            uvtools.extract(self.config.uvtools_input_file, temp_folder)
+            image_paths = [os.path.join(temp_folder, f) for f in os.listdir(temp_folder) if f.lower().endswith('.png')]
+        else:
+            self.status_update.emit("Reading images from folder...")
+            image_paths = [os.path.join(self.config.input_folder, f) for f in os.listdir(self.config.input_folder) if f.lower().endswith('.png')]
+
+        return sorted(image_paths)
+
+    def stop(self):
+        self._is_running = False
