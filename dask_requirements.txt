@@ -1,0 +1,10 @@
+# This file will contain the python dependencies for the Dask-based 3D print layer processor.
+pyside6
+numpy
+dask
+dask-image
+numba
+opencv-python
+pyyaml
+imageio
+pytest
