@@ -69,8 +69,8 @@ def compile_slang_to_glsl(slang_path, include_dir, temp_dir):
         "slangc",
         str(slang_path),
         "-I", str(include_dir),
-        "-t", "glsl",
-        "-p", "glsl_450",
+        "-target", "glsl",
+        "-profile", "glsl_450",
         "-D", "FRAGMENT",
         "-e", "main",
         "-o", str(output_path)
