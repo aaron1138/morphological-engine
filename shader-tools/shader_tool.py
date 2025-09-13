@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import struct
+import sys
 import tempfile
 from pathlib import Path
 
@@ -113,6 +114,15 @@ def apply_shader(input_image_path, preset_path, output_image_path):
                 break  # Success, exit the loop
             except Exception as e:
                 print(f"Info: Failed to create context with backend '{backend}': {e}")
+                # If we get the specific EGL import error, print detailed diagnostics.
+                if backend == 'egl' and "cannot import name 'egl' from 'glcontext'" in str(e):
+                    print("\n--- EGL IMPORT DIAGNOSTICS ---")
+                    print(f"This error suggests the 'glcontext' library is not installed correctly for EGL.")
+                    print(f"Python Executable: {sys.executable}")
+                    print(f"Python Version: {sys.version}")
+                    print(f"Python Path: {sys.path}")
+                    print(f"System PATH: {os.environ.get('PATH')}")
+                    print("---------------------------------\n")
 
         if ctx is None:
             raise RuntimeError(
