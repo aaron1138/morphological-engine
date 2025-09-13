@@ -67,13 +67,13 @@ def compile_slang_to_glsl(slang_path, include_dir, temp_dir):
     output_path = temp_dir / f"{slang_path.stem}.glsl"
     command = [
         "slangc",
+        str(slang_path),
         "-I", str(include_dir),
         "-target", "glsl",
         "-profile", "glsl_450",
         "-stage", "fragment",
         "-entry", "main",
-        "-o", str(output_path),
-        str(slang_path)
+        "-o", str(output_path)
     ]
 
     print(f"Compiling {slang_path.name}...")
