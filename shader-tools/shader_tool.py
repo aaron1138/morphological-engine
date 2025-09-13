@@ -89,6 +89,30 @@ def compile_slang_to_glsl(slang_path, include_dir, temp_dir):
     with open(output_path, 'r') as f:
         return f.read()
 
+def create_context_auto():
+    """
+    Automatically creates a headless moderngl context, providing detailed debug info.
+    """
+    print("--- Creating ModernGL Context ---")
+    try:
+        # Let moderngl try to find the best backend automatically.
+        # It will try available backends like 'wgl', 'egl', 'glx', 'osmesa' etc.
+        ctx = moderngl.create_context(standalone=True, require=450)
+        print("Context created successfully.")
+        print("  - Vendor: {}".format(ctx.info.get('GL_VENDOR', 'N/A')))
+        print("  - Renderer: {}".format(ctx.info.get('GL_RENDERER', 'N/A')))
+        print("  - Version: {}".format(ctx.info.get('GL_VERSION', 'N/A')))
+        print("---------------------------------")
+        return ctx
+    except Exception as e:
+        print("FATAL: Failed to create a headless ModernGL context.")
+        print("This tool requires a functioning OpenGL 4.5 driver for headless processing.")
+        print("On Windows, this is typically handled by the graphics driver (NVIDIA, AMD, Intel).")
+        print("On Linux, you might need to install packages for EGL or OSMesa.")
+        print(f"Underlying moderngl error: {e}")
+        # Re-raise to ensure the program exits cleanly
+        raise
+
 def apply_shader(input_image_path, preset_path, output_image_path):
     """The main function to apply a shader preset to an image."""
     print(f"Processing {input_image_path} with {Path(preset_path).name}")
@@ -102,16 +126,8 @@ def apply_shader(input_image_path, preset_path, output_image_path):
         shader_passes = parse_preset(preset_path)
         preset_dir = Path(preset_path).parent
 
-        # Create a headless context, letting ModernGL auto-detect the best backend.
-        try:
-            ctx = moderngl.create_standalone_context(require=450)
-        except Exception as e:
-            print("FATAL: Failed to create a headless ModernGL context.")
-            print("This usually means your system is missing the necessary graphics drivers (for EGL)")
-            print("or a software renderer (like OSMesa) for headless operation.")
-            print(f"Underlying error: {e}")
-            # Re-raise to ensure the program exits
-            raise
+        # Create a headless context using the new helper function
+        ctx = create_context_auto()
 
         # Load input image
         input_image = Image.open(input_image_path).convert("RGBA")
@@ -131,12 +147,8 @@ def apply_shader(input_image_path, preset_path, output_image_path):
         uniform_buffer = ctx.buffer(data=ubo_data)
         resources.append(uniform_buffer)
 
-        # Passthrough vertex shader for full-screen quad
-        vert_shader = ctx.shader(PASSTHROUGH_VERTEX_SHADER, 'vertex')
-
-        # Dummy VAO for rendering
-        vao = ctx.vertex_array(vert_shader, [])
-        resources.append(vao)
+        # The passthrough vertex shader is now passed directly to the program in the loop.
+        # The VAO is also created per-pass, as it depends on the program.
 
         current_texture = source_texture
         current_size = original_size
@@ -170,10 +182,10 @@ def apply_shader(input_image_path, preset_path, output_image_path):
             # Compile slang shader to GLSL
             fragment_glsl = compile_slang_to_glsl(pass_info['path'], preset_dir, Path(temp_dir.name))
 
-            # Create program
-            frag_shader = ctx.shader(fragment_glsl, 'fragment')
-            program = ctx.program(vertex_shader=vert_shader, fragment_shader=frag_shader)
-            resources.extend([frag_shader, program])
+            # Create program and VAO for this pass
+            program = ctx.program(vertex_shader=PASSTHROUGH_VERTEX_SHADER, fragment_shader=fragment_glsl)
+            vao = ctx.vertex_array(program, [])
+            resources.extend([program, vao])
 
             # Update UBO
             ubo_update = struct.pack('4f4f4f',
