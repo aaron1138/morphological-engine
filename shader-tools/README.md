@@ -16,6 +16,7 @@ This project provides a command-line backend and a graphical user interface for 
     ```bash
     pip install -r requirements.txt
     ```
+    **Note:** The `moderngl[headless]` dependency is used to ensure that the necessary libraries for offscreen GPU processing are installed correctly. If you are having issues, you may need to uninstall existing versions first: `pip uninstall moderngl glcontext` before running the install command again.
 
 ## Usage
 
