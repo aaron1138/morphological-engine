@@ -72,19 +72,45 @@ def parse_slangp(preset_path):
     Returns a list of dictionaries, where each dict represents a shader pass.
     """
     print(f"Parsing preset file: {preset_path}")
-    config = configparser.ConfigParser(interpolation=None)
-    config.read(preset_path)
+    config = configparser.ConfigParser(interpolation=None, allow_no_value=True)
 
-    if not config.has_option("DEFAULT", "shaders"):
+    try:
+        with open(preset_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Prepend [DEFAULT] header if missing, to satisfy configparser
+        if not content.strip().startswith('['):
+            content = '[DEFAULT]\n' + content
+
+        config.read_string(content)
+    except Exception as e:
+        print(f"Could not read or parse preset file: {e}", file=sys.stderr)
+        raise ValueError(f"Failed to process preset file: {preset_path}") from e
+
+    default_section = config['DEFAULT']
+
+    if "shaders" not in default_section:
         raise ValueError("Invalid .slangp preset: 'shaders' count not found.")
 
-    num_passes = config.getint("DEFAULT", "shaders")
+    num_passes = default_section.getint("shaders")
     passes = []
 
     for i in range(num_passes):
-        shader_key = f"shader{i}"
+        # Construct keys for the current pass
+        path_key = f"shader{i}"
+        filter_key = f"filter_linear{i}"
+        scale_type_x_key = f"scale_type_x{i}"
+        scale_type_y_key = f"scale_type_y{i}"
+        scale_x_key = f"scale_x{i}"
+        scale_y_key = f"scale_y{i}"
+        alias_key = f"alias{i}"
 
-        rel_path = Path(config.get(shader_key, "path").strip('"'))
+        # Get shader path
+        shader_rel_path_str = default_section.get(path_key)
+        if not shader_rel_path_str:
+            raise ValueError(f"Path for shader pass {i} ('{path_key}') not found in preset.")
+
+        rel_path = Path(shader_rel_path_str.strip('"'))
         shader_path = (preset_path.parent / rel_path).resolve()
 
         if not shader_path.exists():
@@ -92,12 +118,12 @@ def parse_slangp(preset_path):
 
         pass_info = {
             "path": shader_path,
-            "filter_linear": config.getboolean(shader_key, "filter_linear", fallback=False),
-            "scale_type_x": config.get(shader_key, "scale_type_x", fallback="source"),
-            "scale_type_y": config.get(shader_key, "scale_type_y", fallback="source"),
-            "scale_x": config.getfloat(shader_key, "scale_x", fallback=1.0),
-            "scale_y": config.getfloat(shader_key, "scale_y", fallback=1.0),
-            "alias": config.get(shader_key, "alias", fallback=f"Pass{i}"),
+            "filter_linear": default_section.getboolean(filter_key, fallback=False),
+            "scale_type_x": default_section.get(scale_type_x_key, fallback="source"),
+            "scale_type_y": default_section.get(scale_type_y_key, fallback="source"),
+            "scale_x": default_section.getfloat(scale_x_key, fallback=1.0),
+            "scale_y": default_section.getfloat(scale_y_key, fallback=1.0),
+            "alias": default_section.get(alias_key, fallback=f"Pass{i}"),
         }
         passes.append(pass_info)
 
