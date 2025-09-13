@@ -101,15 +101,24 @@ def apply_shader(input_image_path, preset_path, output_image_path):
         shader_passes = parse_preset(preset_path)
         preset_dir = Path(preset_path).parent
 
-        # We try 'egl' first as it's more modern, but fallback to 'osmesa' if it fails,
-        # as osmesa is more likely to be available in a software-only environment.
-        try:
-            ctx = moderngl.create_standalone_context(require=450, backend='egl')
-        except Exception:
+        # Attempt to create a headless context by trying several backends.
+        # This is often the trickiest part on Windows.
+        backends = ['egl', 'wgl', 'osmesa']
+        ctx = None
+        for backend in backends:
             try:
-                ctx = moderngl.create_standalone_context(require=450, backend='osmesa')
+                print(f"Attempting to create ModernGL context with backend: '{backend}'...")
+                ctx = moderngl.create_standalone_context(require=450, backend=backend)
+                print(f"Successfully created context with backend: '{backend}'")
+                break  # Success, exit the loop
             except Exception as e:
-                 raise RuntimeError("Failed to create ModernGL context with any backend.") from e
+                print(f"Info: Failed to create context with backend '{backend}': {e}")
+
+        if ctx is None:
+            raise RuntimeError(
+                "Failed to create a ModernGL context with any of the attempted backends (egl, wgl, osmesa).\n"
+                "Please ensure your GPU drivers are up-to-date or that you have installed a software renderer like OSMesa."
+            )
 
         # Load input image
         input_image = Image.open(input_image_path).convert("RGBA")
