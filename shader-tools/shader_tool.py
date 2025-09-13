@@ -102,33 +102,16 @@ def apply_shader(input_image_path, preset_path, output_image_path):
         shader_passes = parse_preset(preset_path)
         preset_dir = Path(preset_path).parent
 
-        # Attempt to create a headless context by trying several backends.
-        # This is often the trickiest part on Windows.
-        backends = ['egl', 'wgl', 'osmesa']
-        ctx = None
-        for backend in backends:
-            try:
-                print(f"Attempting to create ModernGL context with backend: '{backend}'...")
-                ctx = moderngl.create_standalone_context(require=450, backend=backend)
-                print(f"Successfully created context with backend: '{backend}'")
-                break  # Success, exit the loop
-            except Exception as e:
-                print(f"Info: Failed to create context with backend '{backend}': {e}")
-                # If we get the specific EGL import error, print detailed diagnostics.
-                if backend == 'egl' and "cannot import name 'egl' from 'glcontext'" in str(e):
-                    print("\n--- EGL IMPORT DIAGNOSTICS ---")
-                    print(f"This error suggests the 'glcontext' library is not installed correctly for EGL.")
-                    print(f"Python Executable: {sys.executable}")
-                    print(f"Python Version: {sys.version}")
-                    print(f"Python Path: {sys.path}")
-                    print(f"System PATH: {os.environ.get('PATH')}")
-                    print("---------------------------------\n")
-
-        if ctx is None:
-            raise RuntimeError(
-                "Failed to create a ModernGL context with any of the attempted backends (egl, wgl, osmesa).\n"
-                "Please ensure your GPU drivers are up-to-date or that you have installed a software renderer like OSMesa."
-            )
+        # Create a headless context, letting ModernGL auto-detect the best backend.
+        try:
+            ctx = moderngl.create_standalone_context(require=450)
+        except Exception as e:
+            print("FATAL: Failed to create a headless ModernGL context.")
+            print("This usually means your system is missing the necessary graphics drivers (for EGL)")
+            print("or a software renderer (like OSMesa) for headless operation.")
+            print(f"Underlying error: {e}")
+            # Re-raise to ensure the program exits
+            raise
 
         # Load input image
         input_image = Image.open(input_image_path).convert("RGBA")
