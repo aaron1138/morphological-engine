@@ -4,6 +4,7 @@ import subprocess
 import threading
 import queue
 import os
+import sys
 
 class ShaderGUI(tk.Tk):
     def __init__(self):
@@ -155,7 +156,7 @@ class ShaderGUI(tk.Tk):
                 env["PATH"] = mock_bin_path + os.pathsep + env["PATH"]
                 env["GLCONTEXT_BACKEND"] = "osmesa" # Attempt to force headless
 
-                command = ["python3", backend_script, image_in, shader, image_out]
+                command = [sys.executable, backend_script, image_in, shader, image_out]
 
                 process = subprocess.Popen(
                     command,
