@@ -1,6 +1,7 @@
 import os
 import queue
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -162,7 +163,7 @@ class App(tk.Tk):
                 backend_script = Path(__file__).parent / "shader_tool.py"
 
                 command = [
-                    "python",
+                    sys.executable,
                     str(backend_script),
                     str(image_path),
                     str(shader),
