@@ -45,20 +45,37 @@ def compile_slang_to_glsl(slang_path, temp_dir):
     glsl_path = temp_dir / f"{slang_path.stem}_{os.urandom(4).hex()}.glsl"
     include_dir = slang_path.parent
 
+    # Detect which compilation flag to use by inspecting the shader content
+    try:
+        with open(slang_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read()
+    except IOError as e:
+        print(f"Error reading shader file {slang_path}: {e}", file=sys.stderr)
+        return None
+
+    stage_flag = []
+    if "#pragma stage" in content:
+        print("Shader uses '#pragma stage'. Compiling with '-stage frag'.")
+        stage_flag = ["-stage", "frag"]
+    else:
+        print("Shader does not use '#pragma stage'. Compiling with '-D FRAGMENT'.")
+        stage_flag = ["-D", "FRAGMENT"]
+
     command = [
         "slangc", str(slang_path),
         "-I", str(include_dir),
         "-o", str(glsl_path),
         "-target", "glsl",
         "-profile", "glsl_450",
-        "-D", "FRAGMENT",
+        *stage_flag,  # Unpack the chosen flag and its value
         "-entry", "main"
     ]
 
     try:
         result = subprocess.run(command, check=True, capture_output=True, text=True)
+        # slangc often prints warnings to stderr even on success, so log them to stdout for info.
         if result.stderr:
-            print(f"slangc compilation warning for {slang_path}:\n{result.stderr}", file=sys.stderr)
+            print(f"slangc compilation messages for {slang_path}:\n{result.stderr}")
         print(f"Successfully compiled to {glsl_path}")
         return glsl_path
     except subprocess.CalledProcessError as e:
