@@ -17,11 +17,11 @@ import sys
 import tempfile
 from PIL import Image
 
-# Attempt to import ModernGL, provide a helpful error message if it's not installed.
+# Attempt to import moderngl, provide a helpful error message if it's not installed.
 try:
-    import ModernGL
+    import moderngl
 except ImportError:
-    print("Error: ModernGL is not installed. Please install it with 'pip install moderngl'.")
+    print("Error: moderngl is not installed. Please install it with 'pip install moderngl'.")
     sys.exit(1)
 
 # --- Constants ---
@@ -72,45 +72,56 @@ def parse_shader_preset(preset_path):
         sys.exit(1)
 
     parser = configparser.ConfigParser(interpolation=None)
-    # configparser by default treats keys without values as lines to be ignored.
-    # We also need to disable case-insensitivity for keys.
     parser.optionxform = str
-    parser.read(preset_path)
 
-    try:
-        num_passes = int(parser.get('parameters', 'shaders'))
-    except (configparser.NoSectionError, configparser.NoOptionError, ValueError) as e:
-        logging.error(f"Failed to read the number of shader passes from preset: {e}")
-        logging.error("The .slangp file must have a 'shaders' key under a 'parameters' section or globally.")
-        # Fallback for older presets where 'shaders' is a global key
+    # First, try to parse with a [parameters] section
+    parser.read(preset_path)
+    section_to_use = None
+    num_passes = 0
+
+    if parser.has_section('parameters') and parser.has_option('parameters', 'shaders'):
         try:
-            parser = configparser.ConfigParser(interpolation=None)
-            parser.optionxform = str
-            # Manually add a dummy section to read global keys
+            num_passes = parser.getint('parameters', 'shaders')
+            section_to_use = 'parameters'
+            logging.info("Found 'shaders' count in [parameters] section.")
+        except (ValueError, configparser.NoOptionError):
+            pass # Will proceed to fallback
+
+    # Fallback for older presets where 'shaders' is a global key
+    if section_to_use is None:
+        logging.info("Could not find 'shaders' in [parameters], trying fallback for global keys.")
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        try:
             with open(preset_path) as f:
                 content = "[dummy_section]\n" + f.read()
             parser.read_string(content)
-            num_passes = int(parser.get('dummy_section', 'shaders'))
+            num_passes = parser.getint('dummy_section', 'shaders')
+            section_to_use = 'dummy_section'
+            logging.info("Found 'shaders' count in global scope (using dummy section).")
         except (configparser.NoOptionError, ValueError) as fallback_e:
-            logging.error(f"Fallback parsing failed: {fallback_e}")
+            logging.error(f"Fallback parsing failed: Could not find a valid 'shaders' key. Error: {fallback_e}")
             sys.exit(1)
 
+    if not section_to_use:
+        logging.error("Could not determine a valid section or find the 'shaders' key in the preset.")
+        sys.exit(1)
 
     passes = []
     for i in range(num_passes):
         try:
-            shader_path = parser.get('dummy_section', f'shader{i}').strip('"')
+            shader_path = parser.get(section_to_use, f'shader{i}').strip('"')
             pass_info = {
                 'shader_path': shader_path,
-                'filter_linear': parser.getboolean('dummy_section', f'filter_linear{i}', fallback=True),
-                'scale_type_x': parser.get('dummy_section', f'scale_type_x{i}', fallback='source'),
-                'scale_type_y': parser.get('dummy_section', f'scale_type_y{i}', fallback='source'),
-                'scale_x': parser.getfloat('dummy_section', f'scale_x{i}', fallback=1.0),
-                'scale_y': parser.getfloat('dummy_section', f'scale_y{i}', fallback=1.0),
+                'filter_linear': parser.getboolean(section_to_use, f'filter_linear{i}', fallback=True),
+                'scale_type_x': parser.get(section_to_use, f'scale_type_x{i}', fallback='source'),
+                'scale_type_y': parser.get(section_to_use, f'scale_type_y{i}', fallback='source'),
+                'scale_x': parser.getfloat(section_to_use, f'scale_x{i}', fallback=1.0),
+                'scale_y': parser.getfloat(section_to_use, f'scale_y{i}', fallback=1.0),
             }
             passes.append(pass_info)
         except configparser.NoOptionError as e:
-            logging.error(f"Missing parameter for pass {i} in preset file: {e}")
+            logging.error(f"Missing parameter for pass {i} in preset file (section: {section_to_use}): {e}")
             sys.exit(1)
 
     logging.info(f"Successfully parsed {len(passes)} shader passes.")
@@ -185,8 +196,8 @@ def apply_shaders(input_image_path, output_image_path, shader_passes, preset_dir
 
     try:
         # --- 1. Initialization and Data Loading ---
-        ctx = ModernGL.create_standalone_context(require=450)
-        logging.info(f"ModernGL context created. Vendor: {ctx.info['GL_VENDOR']}, Renderer: {ctx.info['GL_RENDERER']}")
+        ctx = moderngl.create_standalone_context(require=450)
+        logging.info(f"moderngl context created. Vendor: {ctx.info['GL_VENDOR']}, Renderer: {ctx.info['GL_RENDERER']}")
 
         input_image = Image.open(input_image_path).convert('RGBA')
         original_size = input_image.size
@@ -221,7 +232,7 @@ def apply_shaders(input_image_path, output_image_path, shader_passes, preset_dir
 
         # Initial texture
         textures[0] = ctx.texture(original_size, 4, input_image.tobytes())
-        textures[0].filter = (ModernGL.LINEAR, ModernGL.LINEAR)
+        textures[0].filter = (moderngl.LINEAR, moderngl.LINEAR)
         textures[0].repeat_x = False
         textures[0].repeat_y = False
 
@@ -266,7 +277,7 @@ def apply_shaders(input_image_path, output_image_path, shader_passes, preset_dir
 
             # f) Render a full-screen quad
             vao = ctx.vertex_array(program, [])
-            vao.render(mode=ModernGL.TRIANGLE_STRIP, vertices=4)
+            vao.render(mode=moderngl.TRIANGLE_STRIP, vertices=4)
 
             # g) Update current_size for the next iteration
             current_size = output_size
