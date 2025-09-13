@@ -4,6 +4,7 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import json
 from pathlib import Path
 from tkinter import filedialog, messagebox
 from tkinter.scrolledtext import ScrolledText
@@ -14,6 +15,7 @@ class App(tk.Tk):
         self.title("Shader Image Processor")
         self.geometry("800x600")
 
+        self.config_path = Path.home() / ".shader_tool_gui_settings.json"
         self.processing_queue = queue.Queue()
         self.is_processing = False
 
@@ -65,6 +67,9 @@ class App(tk.Tk):
         self.log_widget = ScrolledText(log_frame, state='disabled', wrap=tk.WORD, height=10)
         self.log_widget.pack(fill=tk.BOTH, expand=True)
 
+        self.load_settings()
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
     def log(self, message):
         """Append a message to the log widget."""
         self.log_widget.config(state='normal')
@@ -101,6 +106,32 @@ class App(tk.Tk):
         if path:
             self.output_folder_var.set(path)
 
+    def load_settings(self):
+        try:
+            with open(self.config_path, 'r') as f:
+                settings = json.load(f)
+                self.input_image_var.set(settings.get("input_image", ""))
+                self.input_folder_var.set(settings.get("input_folder", ""))
+                self.shader_preset_var.set(settings.get("shader_preset", ""))
+                self.output_folder_var.set(settings.get("output_folder", ""))
+        except (FileNotFoundError, json.JSONDecodeError):
+            # Config file doesn't exist or is invalid, just start with empty fields
+            pass
+
+    def save_settings(self):
+        settings = {
+            "input_image": self.input_image_var.get(),
+            "input_folder": self.input_folder_var.get(),
+            "shader_preset": self.shader_preset_var.get(),
+            "output_folder": self.output_folder_var.get(),
+        }
+        with open(self.config_path, 'w') as f:
+            json.dump(settings, f, indent=4)
+
+    def on_closing(self):
+        self.save_settings()
+        self.destroy()
+
     def start_processing(self):
         if self.is_processing:
             messagebox.showwarning("Busy", "Processing is already in progress.")
@@ -121,6 +152,8 @@ class App(tk.Tk):
         if not output_folder:
             messagebox.showerror("Error", "Please select an output folder.")
             return
+
+        self.save_settings()
 
         images_to_process = []
         if input_image:
